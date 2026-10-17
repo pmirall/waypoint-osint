@@ -16,6 +16,7 @@
 
     getEnvStatus: () => invoke('env_status'),
     runEnvSetup: () => invoke('env_setup'),
+    recalibrate: () => invoke('env_recalibrate'),
     purgeEnv: () => invoke('env_purge'),
     onEnvProgress: (cb) => listen('env-progress', (e) => cb(e.payload)),
 

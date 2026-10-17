@@ -696,20 +696,23 @@ $('settingsBtn').addEventListener('click', async () => {
   resetPurgeButton();
   const env = await window.api.getEnvStatus();
   renderModels(s, env);
-  $('engineInfo').textContent = 'ONNX Runtime with DirectML (CPU fallback).';
+  $('engineInfo').textContent = 'ONNX Runtime with DirectML on Windows or CUDA on Linux (CPU fallback).';
   $('versionInfo').textContent = `Waypoint ${await window.api.appVersion()}`;
   $('updateStatus').textContent = '';
   const hw = s.hardware;
   // Setup records what the engine runs on (accel); settings written by older
   // versions only know about NVIDIA cards (hasGpu / gpuName from nvidia-smi).
   const device = !hw ? null
-    : hw.accel === 'CPU' ? 'CPU (no DirectML GPU)'
+    : hw.accel === 'CPU' ? 'CPU (no supported GPU)'
+    : hw.accel === 'CUDA' ? (hw.gpuName ? `${hw.gpuName} via CUDA` : 'GPU via CUDA')
     : hw.accel === 'DirectML' ? (hw.gpuName ? `${hw.gpuName} via DirectML` : 'GPU via DirectML')
     : hw.hasGpu ? (hw.gpuName || 'NVIDIA GPU')
     : 'CPU (no NVIDIA GPU found)';
   $('hardwareInfo').textContent = !hw ? 'Unknown until setup runs.'
     : [device, hw.vramMb ? `${(hw.vramMb / 1024).toFixed(0)} GB VRAM` : null,
-      hw.samplesPerSec ? `${Math.round(hw.samplesPerSec)} samples/s measured` : null].filter(Boolean).join('  ·  ');
+      hw.samplesPerSec ? `${Math.round(hw.samplesPerSec)} samples/s measured` : null].filter(Boolean).join('  ·  ')
+    // Why the GPU isn't in use, when setup could tell.
+    + (hw.accelNote ? `\n${hw.accelNote}` : '');
   settingsDialog.showModal();
 });
 $('tokenReveal').addEventListener('click', () => {
@@ -780,7 +783,7 @@ function setupAppend(text) { setupLog.textContent += String(text).replace(/\s+$/
 
 // Steps shown beside the dial.
 const SETUP_STEPS = [
-  ['runtime', 'ONNX Runtime', 'Inference runtime and DirectML, from NuGet'],
+  ['runtime', 'ONNX Runtime', 'Inference runtime and GPU support, from the official ONNX Runtime releases'],
   ['models', 'Models', 'PLONK (3 models), StreetCLIP, DINOv2, DISK, LightGlue'],
   ['speed', 'Speed test', 'Picks a default for Samples'],
 ];
@@ -964,11 +967,24 @@ async function applyRecommendedSamples() {
   if (s.hardware) $('numSamples').value = recommendedSamples(s.hardware);
 }
 
+// Setup measured CPU although an NVIDIA GPU is present, which usually means
+// the CUDA libraries were missing at the time. Time the engine again quietly
+// (no download) in case they have been installed since.
+async function recheckGpu() {
+  const s = await window.api.getSettings();
+  const hw = s.hardware;
+  if (!hw || hw.accel !== 'CPU' || !hw.hasGpu) return;
+  const before = $('numSamples').value;
+  const r = await window.api.recalibrate();
+  // Don't overwrite a value the user changed while it was measuring.
+  if (r && r.ok && $('numSamples').value === before) await applyRecommendedSamples();
+}
+
 (async () => {
   renderSteps();
   resetSteps('full');
   refreshRunButtons();
   const status = await window.api.getEnvStatus();
-  if (status.native) { showScreen('mainScreen'); await applyRecommendedSamples(); scheduleUpdateCheck(); }
+  if (status.native) { showScreen('mainScreen'); await applyRecommendedSamples(); scheduleUpdateCheck(); recheckGpu(); }
   else showScreen('setupScreen');
 })();

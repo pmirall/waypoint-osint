@@ -63,7 +63,7 @@ fn main() {
     let sink = Stdout;
     let data_dir = std::env::var_os("WAYPOINT_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("geolocator-gui"));
+        .unwrap_or_else(|| default_data_dir());
     let Some(loc) = waypoint_core::native::locate(&data_dir).filter(|l| l.has(&a.model)) else {
         let msg = format!("ONNX runtime or the files of model '{}' not found", a.model);
         sink.event(serde_json::json!({ "event": "error", "message": msg }));
@@ -77,4 +77,14 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Same folder the desktop app uses: %APPDATA%\geolocator-gui, ~/.local/share/geolocator-gui.
+fn default_data_dir() -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_default();
+    base.join("geolocator-gui")
 }

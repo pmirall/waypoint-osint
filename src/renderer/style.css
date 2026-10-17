@@ -560,3 +560,5 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); letter-spacing: -.01em
   .cand-coords { font-size: 12.5px; }
   .topbar { grid-template-columns: auto auto 1fr auto; }
 }
+
+#hardwareInfo { white-space: pre-line; }

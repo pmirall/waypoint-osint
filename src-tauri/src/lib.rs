@@ -4,9 +4,10 @@
 //! the inference engine, running the pipeline (`waypoint-core`), settings, and
 //! native dialogs.
 //!
-//! Inference runs in-process on ONNX Runtime (DirectML, CPU fallback) with the
-//! exported PLONK, StreetCLIP, DINOv2, DISK and LightGlue models. First-run
-//! setup downloads the runtime from NuGet and the models from MODEL_BASE_URL.
+//! Inference runs in-process on ONNX Runtime (DirectML on Windows, CUDA on
+//! Linux, CPU fallback) with the exported PLONK, StreetCLIP, DINOv2, DISK and
+//! LightGlue models. First-run setup downloads the runtime (NuGet on Windows,
+//! the official GitHub release on Linux) and the models from MODEL_BASE_URL.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -24,7 +25,7 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use sha2::{Digest, Sha256};
 use waypoint_core::native;
-use waypoint_core::onnx::{init_runtime, Accel};
+use waypoint_core::onnx::{init_runtime, Accel, ORT_LIB};
 use waypoint_core::plonk::{self, PlonkStep};
 use waypoint_core::{run as core_run, Cancel, Mode, RunArgs as CoreArgs, Sink};
 
@@ -38,34 +39,193 @@ const IMAGE_EXTS: [&str; 5] = ["jpg", "jpeg", "png", "bmp", "webp"];
 const MODEL_BASE_URL: &str = "https://huggingface.co/killameep/waypoint-models/resolve/main";
 const MODEL_MANIFEST: &str = include_str!("../models.json");
 
-/// A DLL taken from an official NuGet package.
-struct NugetFile {
-    package: &'static str,
-    version: &'static str,
-    package_bytes: u64,
-    member: &'static str,
-    file: &'static str,
-    sha256: &'static str,
+#[cfg(windows)]
+mod runtime {
+    use super::*;
+
+    /// A DLL taken from an official NuGet package.
+    struct NugetFile {
+        package: &'static str,
+        version: &'static str,
+        package_bytes: u64,
+        member: &'static str,
+        file: &'static str,
+        sha256: &'static str,
+    }
+
+    const RUNTIME_FILES: [NugetFile; 2] = [
+        NugetFile {
+            package: "microsoft.ml.onnxruntime.directml",
+            version: "1.24.4",
+            package_bytes: 12_458_649,
+            member: "runtimes/win-x64/native/onnxruntime.dll",
+            file: "onnxruntime.dll",
+            sha256: "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
+        },
+        NugetFile {
+            package: "microsoft.ai.directml",
+            version: "1.15.4",
+            package_bytes: 202_292_617,
+            member: "bin/x64-win/DirectML.dll",
+            file: "DirectML.dll",
+            sha256: "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
+        },
+    ];
+
+    pub fn download_bytes() -> u64 {
+        RUNTIME_FILES.iter().map(|f| f.package_bytes).sum()
+    }
+
+    /// ONNX Runtime + DirectML from NuGet, each pinned to a SHA-256.
+    pub fn install(p: &Paths, tick: &dyn Fn(u64, &str), log: &dyn Fn(&str)) -> Result<(), String> {
+        for f in &RUNTIME_FILES {
+            let dest = p.ort_dir().join(f.file);
+            if sha256_file(&dest).as_deref() == Some(f.sha256) {
+                tick(f.package_bytes, "Downloading ONNX Runtime");
+                continue;
+            }
+            log(&format!("Downloading {} {} from NuGet...", f.package, f.version));
+            let url = format!("https://api.nuget.org/v3-flatcontainer/{0}/{1}/{0}.{1}.nupkg", f.package, f.version);
+            let pkg = p.ort_dir().join(format!("{}.nupkg.part", f.package));
+            fetch(&url, &pkg, &mut |n| tick(n, "Downloading ONNX Runtime"))?;
+            // Scoped so the archive is closed before the package file is deleted.
+            let bytes = {
+                let mut zip = zip::ZipArchive::new(fs::File::open(&pkg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                let mut member = zip.by_name(f.member).map_err(|e| format!("{} not in {}: {e}", f.member, f.package))?;
+                let mut v = Vec::new();
+                member.read_to_end(&mut v).map_err(|e| e.to_string())?;
+                v
+            };
+            let _ = fs::remove_file(&pkg);
+            let got = format!("{:x}", Sha256::digest(&bytes));
+            if got != f.sha256 {
+                return Err(format!("{} from {} {} has an unexpected hash ({got})", f.file, f.package, f.version));
+            }
+            fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
-const RUNTIME_FILES: [NugetFile; 2] = [
-    NugetFile {
-        package: "microsoft.ml.onnxruntime.directml",
-        version: "1.24.4",
-        package_bytes: 12_458_649,
-        member: "runtimes/win-x64/native/onnxruntime.dll",
-        file: "onnxruntime.dll",
-        sha256: "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
-    },
-    NugetFile {
-        package: "microsoft.ai.directml",
-        version: "1.15.4",
-        package_bytes: 202_292_617,
-        member: "bin/x64-win/DirectML.dll",
-        file: "DirectML.dll",
-        sha256: "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
-    },
-];
+#[cfg(not(windows))]
+mod runtime {
+    use super::*;
+
+    /// An official ONNX Runtime release tarball (github.com/microsoft/onnxruntime).
+    struct Tarball {
+        name: &'static str,
+        bytes: u64,
+        sha256: &'static str,
+    }
+
+    const VERSION: &str = "1.24.4";
+    const CPU: Tarball = Tarball {
+        name: "onnxruntime-linux-x64-1.24.4.tgz",
+        bytes: 8_155_822,
+        sha256: "3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747",
+    };
+    const CUDA12: Tarball = Tarball {
+        name: "onnxruntime-linux-x64-gpu-1.24.4.tgz",
+        bytes: 205_429_115,
+        sha256: "c5f804ff5d239b436fa59e9f2fb288a39f7eb9552f6a636c8b71e792e91a8808",
+    };
+    const CUDA13: Tarball = Tarball {
+        name: "onnxruntime-linux-x64-gpu_cuda13-1.24.4.tgz",
+        bytes: 180_280_340,
+        sha256: "fdc6eb18317b4eaeda8b3b86595e5da7e853f72bac67ccac9b04ffc20c9f7fe0",
+    };
+
+    /// The newest CUDA the NVIDIA driver supports, from the `nvidia-smi` banner.
+    pub fn driver_cuda_major() -> Option<u32> {
+        let out = hide_console(&mut Command::new("nvidia-smi")).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let rest = text.split("CUDA Version:").nth(1)?;
+        rest.trim_start().split('.').next()?.parse().ok()
+    }
+
+    /// The CUDA builds don't bundle CUDA itself (they need the system's CUDA
+    /// and cuDNN 9), so they're only fetched when an NVIDIA driver is present;
+    /// everyone else gets the small CPU build. The CUDA build also runs on CPU.
+    fn pick() -> &'static Tarball {
+        match driver_cuda_major() {
+            Some(13..) => &CUDA13,
+            Some(12) => &CUDA12,
+            _ => &CPU,
+        }
+    }
+
+    pub fn download_bytes() -> u64 {
+        pick().bytes
+    }
+
+    pub fn install(p: &Paths, tick: &dyn Fn(u64, &str), log: &dyn Fn(&str)) -> Result<(), String> {
+        let t = pick();
+        // ort/runtime.txt records which tarball the files in ort/ came from.
+        let marker = p.ort_dir().join("runtime.txt");
+        if p.ort_dir().join(ORT_LIB).is_file() && fs::read_to_string(&marker).is_ok_and(|m| m.trim() == t.sha256) {
+            tick(t.bytes, "Downloading ONNX Runtime");
+            return Ok(());
+        }
+        log(&format!("Downloading ONNX Runtime {VERSION} ({})...", t.name));
+        let url = format!("https://github.com/microsoft/onnxruntime/releases/download/v{VERSION}/{}", t.name);
+        let pkg = p.ort_dir().join(format!("{}.part", t.name));
+        let got = fetch(&url, &pkg, &mut |n| tick(n, "Downloading ONNX Runtime"))?;
+        if got != t.sha256 {
+            let _ = fs::remove_file(&pkg);
+            return Err(format!("{} failed its integrity check (sha256 {got})", t.name));
+        }
+        let unpacked = unpack(&pkg, &p.ort_dir());
+        let _ = fs::remove_file(&pkg);
+        unpacked?;
+        fs::write(&marker, t.sha256).map_err(|e| e.to_string())
+    }
+
+    /// Copy the release's `lib/libonnxruntime*` files (not TensorRT) into `dir`,
+    /// under the plain name the loader is given (libonnxruntime.so).
+    fn unpack(tgz: &Path, dir: &Path) -> Result<(), String> {
+        let file = fs::File::open(tgz).map_err(|e| e.to_string())?;
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+        let mut found = false;
+        for entry in archive.entries().map_err(|e| e.to_string())? {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            if !entry.header().entry_type().is_file() {
+                continue; // the .so / .so.1 symlinks
+            }
+            let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+            let in_lib = path.parent().and_then(|d| d.file_name()).is_some_and(|d| d == "lib");
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            if !in_lib || !name.starts_with("libonnxruntime") || name.contains("tensorrt") {
+                continue;
+            }
+            let dest_name = if name.starts_with("libonnxruntime.so.") { ORT_LIB.to_string() } else { name };
+            let part = dir.join(format!("{dest_name}.part"));
+            let mut out = fs::File::create(&part).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            drop(out);
+            fs::rename(&part, dir.join(&dest_name)).map_err(|e| e.to_string())?;
+            found |= dest_name == ORT_LIB;
+        }
+        if found { Ok(()) } else { Err("the ONNX Runtime download did not contain libonnxruntime.so".into()) }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// WAYPOINT_TEST_ORT_TGZ=<path to an onnxruntime-linux-x64-*.tgz> (skipped when unset).
+        #[test]
+        fn unpack_names_the_runtime_plainly() {
+            let Some(tgz) = std::env::var_os("WAYPOINT_TEST_ORT_TGZ") else { return };
+            let dir = std::env::temp_dir().join(format!("waypoint-unpack-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            unpack(Path::new(&tgz), &dir).unwrap();
+            assert!(fs::metadata(dir.join(ORT_LIB)).unwrap().len() > 1_000_000);
+            assert!(dir.join("libonnxruntime_providers_shared.so").is_file());
+            assert!(fs::read_dir(&dir).unwrap().all(|f| !f.unwrap().file_name().to_string_lossy().ends_with(".part")));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+}
 
 // Folder name kept from the Electron build (its `userData` dir), so an
 // existing install keeps its settings.
@@ -227,7 +387,7 @@ fn fetch(url: &str, dest: &Path, on_bytes: &mut dyn FnMut(u64)) -> Result<String
     Ok(format!("{:x}", h.finalize()))
 }
 
-/// Download the native engine: ONNX Runtime + DirectML from NuGet and the
+/// Download the native engine: ONNX Runtime (+ DirectML on Windows) and the
 /// exported models (all three PLONK models) from the model host. Files already
 /// present with the right hash are kept. `progress(done, total, status)` (bytes)
 /// drives the setup screen.
@@ -243,7 +403,7 @@ fn install_native(state: &AppState, progress: &dyn Fn(u64, u64, &str), log: &dyn
         .call()
         .map_err(|e| format!("The model files are not available at {base} ({e}). Check your internet connection and retry."))?;
 
-    let total: u64 = RUNTIME_FILES.iter().map(|f| f.package_bytes).sum::<u64>()
+    let total: u64 = runtime::download_bytes()
         + models.iter().map(|m| m["bytes"].as_u64().unwrap_or(0)).sum::<u64>();
     let done = std::cell::Cell::new(0u64);
     let last = std::cell::Cell::new(-1i64);
@@ -259,31 +419,7 @@ fn install_native(state: &AppState, progress: &dyn Fn(u64, u64, &str), log: &dyn
     fs::create_dir_all(p.ort_dir()).map_err(|e| e.to_string())?;
     fs::create_dir_all(p.onnx_dir()).map_err(|e| e.to_string())?;
 
-    for f in &RUNTIME_FILES {
-        let dest = p.ort_dir().join(f.file);
-        if sha256_file(&dest).as_deref() == Some(f.sha256) {
-            tick(f.package_bytes, "Downloading ONNX Runtime");
-            continue;
-        }
-        log(&format!("Downloading {} {} from NuGet...", f.package, f.version));
-        let url = format!("https://api.nuget.org/v3-flatcontainer/{0}/{1}/{0}.{1}.nupkg", f.package, f.version);
-        let pkg = p.ort_dir().join(format!("{}.nupkg.part", f.package));
-        fetch(&url, &pkg, &mut |n| tick(n, "Downloading ONNX Runtime"))?;
-        // Scoped so the archive is closed before the package file is deleted.
-        let bytes = {
-            let mut zip = zip::ZipArchive::new(fs::File::open(&pkg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-            let mut member = zip.by_name(f.member).map_err(|e| format!("{} not in {}: {e}", f.member, f.package))?;
-            let mut v = Vec::new();
-            member.read_to_end(&mut v).map_err(|e| e.to_string())?;
-            v
-        };
-        let _ = fs::remove_file(&pkg);
-        let got = format!("{:x}", Sha256::digest(&bytes));
-        if got != f.sha256 {
-            return Err(format!("{} from {} {} has an unexpected hash ({got})", f.file, f.package, f.version));
-        }
-        fs::write(&dest, bytes).map_err(|e| e.to_string())?;
-    }
+    runtime::install(p, &tick, log)?;
 
     for m in &models {
         let name = m["name"].as_str().ok_or_else(|| "bad model manifest".to_string())?;
@@ -305,31 +441,130 @@ fn install_native(state: &AppState, progress: &dyn Fn(u64, u64, &str), log: &dyn
     Ok(())
 }
 
-/// Load the native engine and time its PLONK sampler (DirectML, else CPU).
-/// Returns (samples/s, accelerator used). Any failure here means the engine
+/// What calibration measured, and why the GPU wasn't used when it wasn't.
+struct Calibration {
+    samples_per_sec: f64,
+    accel: &'static str,
+    /// Set when the engine fell back to the CPU: the reason, in plain words.
+    note: Option<String>,
+}
+
+/// First line of an error, shortened: ONNX Runtime errors run to several lines.
+fn first_line(e: &str) -> String {
+    let line = e.lines().next().unwrap_or(e).trim();
+    if line.chars().count() > 300 { format!("{}...", line.chars().take(300).collect::<String>()) } else { line.to_string() }
+}
+
+/// The libraries `ldd` could not resolve.
+#[cfg(not(windows))]
+fn missing_libs(ldd_output: &str) -> Vec<String> {
+    ldd_output
+        .lines()
+        .filter(|l| l.contains("not found"))
+        .filter_map(|l| l.split_whitespace().next())
+        .map(String::from)
+        .collect()
+}
+
+/// Explain in plain words why the GPU provider failed to load, with the fix.
+/// `err` is ONNX Runtime's own message; it is the last resort.
+#[cfg(not(windows))]
+fn diagnose_gpu_failure(ort_dir: &Path, err: &str) -> String {
+    let cuda_lib = ort_dir.join("libonnxruntime_providers_cuda.so");
+    let major = runtime::driver_cuda_major();
+    if !cuda_lib.is_file() {
+        return match major {
+            Some(_) => "The CPU-only ONNX Runtime is installed. Use Delete downloads in Settings, then run setup again to fetch the CUDA build.".into(),
+            None => "No NVIDIA driver found (nvidia-smi did not run), so the CUDA build of ONNX Runtime was not installed.".into(),
+        };
+    }
+    // The CUDA provider's own dependencies; whatever ldd can't resolve is what to install.
+    let ldd = Command::new("ldd").arg(&cuda_lib).output().ok();
+    let missing = ldd.map(|o| missing_libs(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    if missing.is_empty() {
+        return format!("CUDA could not start: {}", first_line(err));
+    }
+    let cuda = major.map_or_else(|| "13".to_string(), |m| m.to_string());
+    let mut fixes = vec![];
+    if missing.iter().any(|l| l.starts_with("libcudnn")) {
+        fixes.push(format!("cuDNN 9 for CUDA {cuda} (Debian/Ubuntu: sudo apt install cudnn9-cuda-{cuda}; others: https://developer.nvidia.com/cudnn-downloads)"));
+    }
+    if missing.iter().any(|l| !l.starts_with("libcudnn")) {
+        fixes.push(format!("the CUDA {cuda} runtime libraries (https://developer.nvidia.com/cuda-downloads)"));
+    }
+    format!("Missing {}. Install {}, then restart Waypoint.", missing.join(", "), fixes.join(" and "))
+}
+
+#[cfg(windows)]
+fn diagnose_gpu_failure(_ort_dir: &Path, err: &str) -> String {
+    format!("DirectML could not start: {}", first_line(err))
+}
+
+/// Load the native engine and time its PLONK sampler (DirectML on Windows,
+/// CUDA elsewhere, else CPU). Any failure to load the engine at all means it
 /// can't run on this machine.
-fn native_calibration(state: &AppState, log: &dyn Fn(&str)) -> Result<(f64, &'static str), String> {
+fn native_calibration(state: &AppState, log: &dyn Fn(&str)) -> Result<Calibration, String> {
     let p = &state.paths;
     let unusable = |e: String| format!("The inference engine could not start ({e})");
-    init_runtime(&p.ort_dir().join("onnxruntime.dll")).map_err(|e| {
-        unusable(format!("{e}. ONNX Runtime needs the Microsoft Visual C++ 2015-2022 Redistributable (x64)"))
+    init_runtime(&p.ort_dir().join(ORT_LIB)).map_err(|e| {
+        let hint = if cfg!(windows) {
+            ". ONNX Runtime needs the Microsoft Visual C++ 2015-2022 Redistributable (x64)"
+        } else {
+            ". ONNX Runtime needs a 64-bit Linux with glibc 2.28 or newer"
+        };
+        unusable(format!("{e}{hint}"))
     })?;
     // Calibrated on the default model; YFCC is the same size, iNaturalist is smaller.
     let v = plonk::variant("osv5m").expect("osv5m");
-    let (step, accel) = match PlonkStep::load(&p.onnx_dir(), v, Accel::DirectMl) {
-        Ok(s) => (s, "DirectML"),
+    let (gpu, gpu_name) = if cfg!(windows) { (Accel::DirectMl, "DirectML") } else { (Accel::Cuda, "CUDA") };
+    let (step, accel, note) = match PlonkStep::load(&p.onnx_dir(), v, gpu) {
+        Ok(s) => (s, gpu_name, None),
         Err(e) => {
-            log(&format!("DirectML unavailable ({e}); using the CPU"));
-            (PlonkStep::load(&p.onnx_dir(), v, Accel::Cpu).map_err(|e| unusable(e.to_string()))?, "CPU")
+            let why = diagnose_gpu_failure(&p.ort_dir(), &e.to_string());
+            log(&format!("{gpu_name} unavailable, using the CPU. {why}"));
+            eprintln!("[waypoint] {gpu_name} unavailable, using the CPU: {why}\n[waypoint] ONNX Runtime said: {e}");
+            (PlonkStep::load(&p.onnx_dir(), v, Accel::Cpu).map_err(|e| unusable(e.to_string()))?, "CPU", Some(why))
         }
     };
-    let sps = step.throughput().map_err(|e| unusable(e.to_string()))?;
-    Ok((sps, accel))
+    let samples_per_sec = step.throughput().map_err(|e| unusable(e.to_string()))?;
+    Ok(Calibration { samples_per_sec, accel, note })
+}
+
+/// Store what calibration measured; returns the recommended Samples value.
+fn save_hardware(state: &AppState, c: &Calibration) -> Result<u64, String> {
+    let (sps, accel) = (c.samples_per_sec, c.accel);
+    let recommended = samples_from_throughput(sps);
+    // hasGpu / gpuName describe an NVIDIA card (nvidia-smi); `accel` is what
+    // the native engine actually runs on (DirectML covers any DX12 GPU; CUDA needs NVIDIA).
+    let mut hardware = query_gpu().as_object().cloned().unwrap_or_default();
+    hardware.insert("accel".into(), json!(accel));
+    hardware.insert("samplesPerSec".into(), json!(sps));
+    hardware.insert("recommendedSamples".into(), json!(recommended));
+    // Why the GPU wasn't used (null when it was), for the Settings screen.
+    hardware.insert("accelNote".into(), json!(c.note));
+    merge_settings(&state.paths, Map::from_iter([("hardware".to_string(), Value::Object(hardware))]))?;
+    Ok(recommended)
+}
+
+/// Re-time the installed engine without downloading anything, e.g. after the
+/// user installs the CUDA libraries it was missing. Quiet: no setup events.
+#[tauri::command]
+async fn env_recalibrate(app: AppHandle) -> Value {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let c = native_calibration(&state, &|_| {})?;
+        save_hardware(&state, &c)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match result {
+        Ok(_) => json!({ "ok": true }),
+        Err(e) => json!({ "ok": false, "error": e }),
+    }
 }
 
 fn setup_native(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let p = &state.paths;
     let send = |v: Value| { let _ = app.emit("env-progress", v); };
     let log = |m: &str| send(json!({ "event": "log", "message": m.trim() }));
     // Downloads fill the bar to 92%; calibration takes the rest.
@@ -344,16 +579,9 @@ fn setup_native(app: &AppHandle) -> Result<(), String> {
 
     send(json!({ "event": "stage_start", "stage": "calibrate" }));
     send(json!({ "event": "progress", "pct": 94.0, "status": "Measuring sampling speed" }));
-    let (sps, accel) = native_calibration(&state, &log)?;
-    let recommended = samples_from_throughput(sps);
-    // hasGpu / gpuName describe an NVIDIA card (nvidia-smi); `accel` is what
-    // the native engine actually runs on (DirectML covers any DX12 GPU).
-    let mut hardware = query_gpu().as_object().cloned().unwrap_or_default();
-    hardware.insert("accel".into(), json!(accel));
-    hardware.insert("samplesPerSec".into(), json!(sps));
-    hardware.insert("recommendedSamples".into(), json!(recommended));
+    let c = native_calibration(&state, &log)?;
+    let (sps, recommended) = (c.samples_per_sec, save_hardware(&state, &c)?);
     send(json!({ "event": "stage_done", "stage": "calibrate", "samples_per_sec": sps, "recommended_samples": recommended }));
-    merge_settings(p, Map::from_iter([("hardware".to_string(), Value::Object(hardware))]))?;
     send(json!({ "event": "setup_complete" }));
     Ok(())
 }
@@ -643,6 +871,7 @@ pub fn run() {
             settings_set,
             env_status,
             env_setup,
+            env_recalibrate,
             env_purge,
             select_image,
             load_image,
@@ -656,4 +885,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Waypoint");
+}
+
+#[cfg(all(test, not(windows)))]
+mod gpu_diagnosis_tests {
+    use super::*;
+
+    #[test]
+    fn ldd_output_yields_the_missing_libraries() {
+        let ldd = "\tlibcudart.so.13 => /usr/local/cuda/lib/libcudart.so.13 (0x1)\n\tlibcudnn.so.9 => not found\n\tlibcublas.so.13 => not found\n";
+        assert_eq!(missing_libs(ldd), ["libcudnn.so.9", "libcublas.so.13"]);
+        assert!(missing_libs("\tlibc.so.6 => /lib/libc.so.6 (0x1)\n").is_empty());
+    }
+
+    #[test]
+    fn a_cpu_only_runtime_is_called_out() {
+        let dir = std::env::temp_dir().join(format!("waypoint-diag-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let why = diagnose_gpu_failure(&dir, "boom");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(why.contains("CPU-only") || why.contains("No NVIDIA driver"), "{why}");
+    }
+
+    #[test]
+    fn long_multiline_errors_are_shortened() {
+        let e = format!("{}\nsecond line", "x".repeat(400));
+        let line = first_line(&e);
+        assert!(line.ends_with("...") && !line.contains("second"));
+    }
 }

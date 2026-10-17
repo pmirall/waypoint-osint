@@ -29,6 +29,18 @@ fn e<E: std::fmt::Display>(err: E) -> Error {
     Error::Msg(format!("onnxruntime: {err}"))
 }
 
+/// File name of the ONNX Runtime shared library in `<data>/ort`.
+#[cfg(windows)]
+pub const ORT_LIB: &str = "onnxruntime.dll";
+#[cfg(not(windows))]
+pub const ORT_LIB: &str = "libonnxruntime.so";
+
+/// Providers to try, best first, when `WAYPOINT_ACCEL` doesn't force one:
+/// DirectML on Windows, CUDA elsewhere; the CPU is always the last resort.
+pub fn default_accel_order() -> Vec<Accel> {
+    if cfg!(windows) { vec![Accel::DirectMl, Accel::Cpu] } else { vec![Accel::Cuda, Accel::Cpu] }
+}
+
 /// Which execution provider a model should prefer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Accel {
@@ -114,7 +126,8 @@ pub fn build_session(path: &Path, accel: Accel) -> Result<Session> {
                 .map_err(e)?;
         }
         Accel::Cuda => {
-            b = b.with_execution_providers([ep::CUDA::default().build()]).map_err(e)?;
+            // Without error_on_failure a missing CUDA/cuDNN would fall back to the CPU unnoticed.
+            b = b.with_execution_providers([ep::CUDA::default().build().error_on_failure()]).map_err(e)?;
         }
     }
     b.commit_from_file(path).map_err(|err| Error::Msg(format!("loading {}: {err}", path.display())))

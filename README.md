@@ -53,7 +53,7 @@ locally. Only the imagery lookups in the refinement stages send data from your m
 - **No paid APIs.** Google Street View, Panoramax, and OpenStreetMap need no keys. Mapillary is optional and free.
 - **Three PLONK models.** OSV-5M for street scenes, YFCC for general photos, iNaturalist for nature shots. Switch in Settings.
 - **Zero manual setup.** The app downloads its own inference engine and models on first launch. No Python required.
-- **Any GPU, or none.** Inference runs through DirectML on NVIDIA, AMD and Intel GPUs, with a CPU fallback.
+- **Any GPU, or none.** Inference runs through DirectML on NVIDIA, AMD and Intel GPUs on Windows, and through CUDA on NVIDIA GPUs on Linux, with a CPU fallback.
 
 ## Download
 
@@ -88,7 +88,7 @@ npm start
 
 On the very first run, Waypoint downloads its **inference engine**:
 
-- [ONNX Runtime](https://onnxruntime.ai/) and DirectML, from their official NuGet packages.
+- [ONNX Runtime](https://onnxruntime.ai/) and DirectML, from their official NuGet packages (Windows) or the official GitHub release (Linux).
 - The exported models (about 2.8 GB) from [the model host](https://huggingface.co/killameep/waypoint-models):
   all three PLONK models, StreetCLIP, DINOv2, DISK and LightGlue.
 
@@ -183,7 +183,7 @@ the same clusters.
 |-------|------|
 | Desktop shell | Tauri 2 (Rust) + WebView2 |
 | Pipeline | `waypoint-core` (Rust): orchestration, clustering, sun math, RANSAC, imagery clients |
-| Inference | ONNX Runtime (DirectML, CPU fallback), in-process |
+| Inference | ONNX Runtime (DirectML on Windows, CUDA on Linux, CPU fallback), in-process |
 | Install & updates | NSIS installer (per user), signed updates via the Tauri updater and GitHub releases |
 | Coarse geolocation | PLONK (OSV-5M, YFCC or iNaturalist), its flow sampler reimplemented in Rust |
 | Image embedding | StreetCLIP (OSV-5M) · DINOv2 (YFCC, iNaturalist) |

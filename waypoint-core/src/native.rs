@@ -55,7 +55,7 @@ pub const RETRIEVAL_FILES: [&str; 14] = [
 /// Env overrides (WAYPOINT_ORT_DLL, WAYPOINT_ONNX_DIR) first, then `<data>/ort` and `<data>/onnx`.
 /// None when the runtime or any shared model file is missing.
 pub fn locate(data_dir: &Path) -> Option<Locations> {
-    let dll = std::env::var_os("WAYPOINT_ORT_DLL").map(PathBuf::from).unwrap_or_else(|| data_dir.join("ort").join("onnxruntime.dll"));
+    let dll = std::env::var_os("WAYPOINT_ORT_DLL").map(PathBuf::from).unwrap_or_else(|| data_dir.join("ort").join(crate::onnx::ORT_LIB));
     let models = std::env::var_os("WAYPOINT_ONNX_DIR").map(PathBuf::from).unwrap_or_else(|| data_dir.join("onnx"));
     if !(dll.is_file() && RETRIEVAL_FILES.iter().all(|n| models.join(n).is_file())) {
         return None;
@@ -65,7 +65,7 @@ pub fn locate(data_dir: &Path) -> Option<Locations> {
 
 /// Load the ONNX models, with PLONK variant `model` ready to run.
 /// `WAYPOINT_ACCEL` = cpu | dml | cuda forces a provider; otherwise DirectML
-/// is tried first and CPU is the fallback.
+/// (Windows) or CUDA (elsewhere) is tried first and CPU is the fallback.
 pub fn open(loc: &Locations, model: &str, log: &dyn Fn(&str)) -> Result<NativeModels> {
     use crate::onnx::init_runtime;
     let v = variant(model).ok_or_else(|| Error::Msg(format!("unknown PLONK model '{model}'")))?;
@@ -76,7 +76,7 @@ pub fn open(loc: &Locations, model: &str, log: &dyn Fn(&str)) -> Result<NativeMo
     let forced = std::env::var("WAYPOINT_ACCEL").ok().and_then(|s| Accel::parse(&s));
     let order: Vec<Accel> = match forced {
         Some(a) => vec![a],
-        None => vec![Accel::DirectMl, Accel::Cpu],
+        None => crate::onnx::default_accel_order(),
     };
     let mut last_err = None;
     for a in order {
