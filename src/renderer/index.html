@@ -5,6 +5,7 @@
   <title>Waypoint</title>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="style.css" />
+  <script src="theme.js"></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -36,12 +37,16 @@
       <div class="setup-body">
         <div id="setupDial" class="dial" data-state="idle" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <svg class="dial-ring" viewBox="0 0 120 120" aria-hidden="true">
-            <circle class="dial-track" cx="60" cy="60" r="52" />
+            <circle class="dial-track" cx="60" cy="60" r="52" pathLength="1" />
             <circle id="setupRing" class="dial-fill" cx="60" cy="60" r="52" />
+            <g class="dial-head"><circle cx="112" cy="60" r="4.5" /></g>
           </svg>
           <div class="dial-center">
-            <svg class="dial-mark"><use href="#i-mark"/></svg>
-            <svg class="dial-done"><use href="#i-check"/></svg>
+            <!-- The #i-mark artwork, inlined so the frame and the pin can move separately. -->
+            <svg class="dial-mark" viewBox="96 96 320 320" aria-hidden="true">
+              <g class="dm-frame" fill="none" stroke="currentColor" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"><path d="M110 186 V110 H186"/><path d="M326 110 H402 V186"/><path d="M402 326 V402 H326"/><path d="M186 402 H110 V326"/></g>
+              <path class="dm-pin" fill="var(--accent)" fill-rule="evenodd" stroke="var(--accent)" stroke-width="8" stroke-linejoin="round" d="M199.14 276.83 A70 70 0 1 1 312.86 276.83 L256 356 Z M228 236 a28 28 0 1 0 56 0 a28 28 0 1 0 -56 0 Z"/>
+            </svg>
             <span id="setupPct" class="dial-pct">0%</span>
           </div>
         </div>

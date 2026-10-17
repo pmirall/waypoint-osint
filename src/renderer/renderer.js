@@ -12,6 +12,22 @@ const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyV
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (name, cls = 'i') => `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
+// Active-step spinner: a faint full track with an accent arc that grows and shrinks as it turns.
+const spinner = (size, r, w) => `<svg class="spinner" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+  <circle class="spinner-track" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${w}"/>
+  <circle class="spinner-arc" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${w}" pathLength="100"/></svg>`;
+// CSS handles reduced motion for itself; this covers motion driven from JS (map flights, smooth scrolls).
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Add a class that runs an entrance animation, and drop it when the animation ends so a later
+// display toggle (switching panels) does not replay it. `endOn` is the element whose animation ends last.
+function playOnce(el, cls, endOn = el) {
+  el.classList.add(cls);
+  endOn.addEventListener('animationend', function done(e) {
+    if (e.target !== endOn) return;
+    endOn.removeEventListener('animationend', done);
+    el.classList.remove(cls);
+  });
+}
 
 // How many top clusters the backend refines with retrieval imagery. Kept in
 // sync with --retrieval_top_clusters so the step list shows the whole plan
@@ -36,7 +52,7 @@ const STAGE_TO_MATCHKEY = { mapillary: 'mapillary_matches', google_sv: 'google_s
 
 const STEP_ICONS = {
   pending: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
-  active:  '<svg viewBox="0 0 20 20"><circle class="spin-ring" cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="30 14" stroke-linecap="round"/></svg>',
+  active:  spinner(20, 7, 2),
   done:    '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="currentColor" opacity=".16"/><path d="M6.5 10.3l2.3 2.3 4.7-4.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   failed:  '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="currentColor" opacity=".16"/><path d="M7.5 7.5l5 5M12.5 7.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   skipped: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="currentColor" opacity=".16"/><path d="M7 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -76,17 +92,15 @@ function formatEta(sec) {
 }
 
 /* ============================================================ Theme */
-(function initTheme() {
-  try {
-    const saved = localStorage.getItem('geo-theme');
-    if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
-  } catch { /* storage unavailable: follow the system theme */ }
-})();
+// The stored theme is applied by theme.js in <head>, before first paint.
 $('themeBtn').addEventListener('click', () => {
   const cur = document.documentElement.getAttribute('data-theme')
     || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
+  const root = document.documentElement;
+  root.classList.add('theme-switching');
+  root.setAttribute('data-theme', next);
+  requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
   try { localStorage.setItem('geo-theme', next); } catch { /* not persisted */ }
   restyleMarkers();
 });
@@ -117,7 +131,10 @@ function updateMapHint() {
 }
 
 /* ============================================================ Map */
-const map = L.map('map', { zoomControl: false, worldCopyJump: true, attributionControl: true }).setView([25, 5], 2);
+const map = L.map('map', {
+  zoomControl: false, worldCopyJump: true, attributionControl: true,
+  zoomAnimation: !reduceMotion(), fadeAnimation: !reduceMotion(), markerZoomAnimation: !reduceMotion(),
+}).setView([25, 5], 2);
 L.control.zoom({ position: 'topright' }).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
@@ -154,8 +171,9 @@ document.querySelectorAll('.legend-item').forEach((btn) => {
 function fitMode() {
   const pts = state.fit[state.mode];
   if (!pts.length) return;
-  if (pts.length === 1) { map.setView(pts[0], Math.max(map.getZoom(), 12)); return; }
-  map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 14 });
+  const animate = !reduceMotion();
+  if (pts.length === 1) { map.setView(pts[0], Math.max(map.getZoom(), 12), { animate }); return; }
+  map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 14, animate });
 }
 $('fitBtn').addEventListener('click', fitMode);
 
@@ -166,16 +184,25 @@ function candIcon(rank, lead, focus) {
     html: `<div class="pin pin-cand${lead ? ' lead' : ''}${focus ? ' focus' : ''}">${rank}</div>`,
   });
 }
-function matchIcon(sourceKey, hot) {
+function matchIcon(sourceKey) {
   return L.divIcon({
     className: '', iconSize: [12, 12], iconAnchor: [6, 6],
-    html: `<div class="pin pin-match${hot ? ' hot' : ''}" style="background:${cssVar(SOURCES[sourceKey].color)}"></div>`,
+    html: `<div class="pin pin-match" style="background:${cssVar(SOURCES[sourceKey].color)}"></div>`,
   });
 }
 // Source colors are resolved from CSS at creation time; refresh on theme flip.
 const matchMarkers = [];
 function restyleMarkers() {
   for (const { marker, sourceKey } of matchMarkers) marker.setIcon(matchIcon(sourceKey));
+}
+// Pin DOM is rebuilt whenever Leaflet re-adds a marker, so entrance and hover classes go on the live
+// element rather than into the icon HTML; a marker re-added later comes back without the entrance.
+const pinEl = (marker) => marker.getElement()?.firstElementChild;
+function enterPin(marker, delayIndex) {
+  const el = pinEl(marker);
+  if (!el) return;
+  if (delayIndex != null) el.style.setProperty('--i', delayIndex);
+  playOnce(el, 'entering');
 }
 
 applySourceVisibility();
@@ -190,6 +217,7 @@ map.on('click', (e) => {
 function setImage(img) {
   state.image = img;
   $('photoImg').src = img.dataUrl;
+  playOnce($('photoImg'), 'entering');
   $('lightboxImg').src = img.dataUrl;
   $('photo').classList.remove('is-empty');
   $('photo').setAttribute('aria-label', 'View photo full size');
@@ -291,6 +319,7 @@ function markStep(stage, st, meta) {
   const li = ensureStep(stage);
   li.className = `step ${st}`;
   li.querySelector('.step-ico').innerHTML = STEP_ICONS[st] || '';
+  if (st === 'done' || st === 'failed' || st === 'skipped') playOnce(li, 'landed', li.querySelector('.step-ico svg'));
   if (meta !== undefined) li.querySelector('.step-meta').textContent = meta;
   else if (st !== 'active') li.querySelector('.step-meta').textContent = '';
   updateOverall();
@@ -325,7 +354,7 @@ function updateOverall() {
   const done = list.querySelectorAll('.step.done, .step.failed, .step.skipped').length;
   const total = Math.max(steps.length, 1);
   $('overallBar').classList.remove('fade');
-  $('overallBar').style.width = `${Math.round((done / total) * 100)}%`;
+  $('overallBar').style.setProperty('--p', done / total);
   if (!state.cancelled) setRunState(`${state.runKind === 'refine' ? 'Refining' : 'Locating'} · ${done} of ${total}`, 'running');
 }
 function finishRun(code) {
@@ -335,9 +364,9 @@ function finishRun(code) {
     if (state.cancelled) markStep(li.dataset.stage, 'skipped', 'stopped');
     else if (failed && li.classList.contains('active')) markStep(li.dataset.stage, 'failed');
   }
-  $('overallBar').style.width = '100%';
+  $('overallBar').style.setProperty('--p', 1);
   setTimeout(() => { $('overallBar').classList.add('fade'); }, 500);
-  setTimeout(() => { if (!state.busy) $('overallBar').style.width = '0'; }, 1000);
+  setTimeout(() => { if (!state.busy) $('overallBar').style.setProperty('--p', 0); }, 1000);
   if (state.cancelled) setRunState('Stopped', 'failed');
   else if (failed) setRunState('Run failed. Open the log for details', 'failed');
   else setRunState(state.runKind === 'refine' ? 'Refine complete' : 'Locate complete', 'done');
@@ -397,6 +426,8 @@ function renderCandidateCard(i, c) {
       <div class="sources"></div>`;
     card.querySelector('.cand-head').addEventListener('click', (e) => { if (!e.target.closest('.copy-btn')) focusCandidate(i, true); });
     card.querySelector('.refine-area').addEventListener('click', () => refineCandidate(clusters[i]));
+    card.style.setProperty('--i', Math.min(i, 6));
+    playOnce(card, 'entering', card.querySelector('.conf-bar i'));
     clusterResults.appendChild(card);
   }
   updateCandidateMeta(card, c);
@@ -427,6 +458,7 @@ function addCandidateMarker(i, c) {
     .bindTooltip(`Candidate ${i + 1} · ${Math.round(c.weight * 100)}%`, { direction: 'top', offset: [0, -16] })
     .on('click', () => focusCandidate(i, false))
     .addTo(layers.results.cands);
+  enterPin(m, Math.min(i, 6));
   candMarkers[i] = m;
   state.fit.locate.push([c.lat, c.lon]);
 }
@@ -435,8 +467,9 @@ function focusCandidate(i, fromList) {
   candMarkers.forEach((m, j) => m && m.setIcon(candIcon(j + 1, j === 0, j === i)));
   const c = clusters[i];
   if (!c) return;
-  if (fromList) map.flyTo([c.lat, c.lon], Math.max(map.getZoom(), 11), { duration: .6 });
-  else clusterResults.querySelector(`[data-cluster="${i}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const zoom = Math.max(map.getZoom(), 11);
+  if (fromList) reduceMotion() ? map.setView([c.lat, c.lon], zoom, { animate: false }) : map.flyTo([c.lat, c.lon], zoom, { duration: .6 });
+  else clusterResults.querySelector(`[data-cluster="${i}"]`)?.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'nearest' });
 }
 
 /* ============================================================ Matches */
@@ -476,14 +509,15 @@ function renderMatches(container, sourceKey, matches, isZoom) {
       </span>`;
     const marker = L.marker([m.lat, m.lon], { icon: matchIcon(sourceKey) })
       .bindTooltip(`${meta.label} · ${m.similarity.toFixed(3)}${hasInliers ? ` · ${m.inliers} inliers` : ''}`, { direction: 'top', offset: [0, -8] })
-      .on('click', () => { group.open = true; row.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); flashRow(row); })
+      .on('click', () => { group.open = true; row.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'nearest' }); flashRow(row); })
       .on('mouseover', () => row.classList.add('is-hot'))
       .on('mouseout', () => row.classList.remove('is-hot'))
       .addTo(layer);
+    enterPin(marker);
     matchMarkers.push({ marker, sourceKey });
-    row.addEventListener('mouseenter', () => marker.setIcon(matchIcon(sourceKey, true)));
-    row.addEventListener('mouseleave', () => marker.setIcon(matchIcon(sourceKey)));
-    row.addEventListener('click', (e) => { if (!e.target.closest('button')) map.panTo([m.lat, m.lon]); });
+    row.addEventListener('mouseenter', () => pinEl(marker)?.classList.add('hot'));
+    row.addEventListener('mouseleave', () => pinEl(marker)?.classList.remove('hot'));
+    row.addEventListener('click', (e) => { if (!e.target.closest('button')) map.panTo([m.lat, m.lon], { animate: !reduceMotion() }); });
     if (url) row.querySelector('.view').addEventListener('click', () => window.api.openExternal(url));
     row.querySelector('.refine').addEventListener('click', () => setRefinePoint(m.lat, m.lon, 1, true));
     list.appendChild(row);
@@ -523,7 +557,8 @@ function drawRefinePoint(fly) {
   if (isFinite(r) && r > 0) {
     const circle = L.circle([lat, lon], { radius: r * 1000, color: cssVar('--accent'), weight: 1.5, dashArray: '5 5', fillOpacity: 0.06, interactive: false })
       .addTo(layers.refine.point);
-    if (fly) map.flyToBounds(circle.getBounds().pad(0.15), { duration: .6, maxZoom: 16 });
+    if (fly && reduceMotion()) map.fitBounds(circle.getBounds().pad(0.15), { maxZoom: 16, animate: false });
+    else if (fly) map.flyToBounds(circle.getBounds().pad(0.15), { duration: .6, maxZoom: 16 });
   }
   if (!state.busy || state.runKind !== 'refine') state.fit.refine = [[lat, lon]];
 }
@@ -779,6 +814,11 @@ $('purgeEnvBtn').addEventListener('click', async () => {
 
 /* ============================================================ First-run setup */
 const setupLog = $('setupLog');
+// Add `cls` and resolve once the animation it starts on `target` has finished (at once if none runs).
+function afterAnimation(el, cls, target = el) {
+  el.classList.add(cls);
+  return Promise.all(target.getAnimations().map((a) => a.finished.catch(() => {})));
+}
 function setupAppend(text) { setupLog.textContent += String(text).replace(/\s+$/, '') + '\n'; setupLog.scrollTop = setupLog.scrollHeight; }
 
 // Steps shown beside the dial.
@@ -789,11 +829,17 @@ const SETUP_STEPS = [
 ];
 let setupSteps = SETUP_STEPS;
 let stepStates = {};
+// Build the rows once, then only flip data-state, so a step's check mark pops when it
+// finishes rather than every time a later step starts.
 function renderSteps() {
-  $('setupSteps').innerHTML = setupSteps.map(([key, name, sub]) => `<li data-state="${stepStates[key] || 'pending'}">
-    <span class="step-dot">${icon('check', 'i i-check')}${icon('close', 'i i-x')}</span>
-    <span><div class="step-name">${esc(name)}</div><div class="step-sub">${esc(sub)}</div></span>
-  </li>`).join('');
+  const ol = $('setupSteps');
+  if ([...ol.children].map((li) => li.dataset.key).join() !== setupSteps.map(([k]) => k).join()) {
+    ol.innerHTML = setupSteps.map(([key, name, sub]) => `<li data-key="${key}">
+      <span class="step-dot">${spinner(18, 8, 2)}${icon('check', 'i i-check')}${icon('close', 'i i-x')}</span>
+      <span><div class="step-name">${esc(name)}</div><div class="step-sub">${esc(sub)}</div></span>
+    </li>`).join('');
+  }
+  for (const li of ol.children) li.dataset.state = stepStates[li.dataset.key] || 'pending';
 }
 function useSteps(list) { setupSteps = list; stepStates = {}; renderSteps(); }
 // Mark `key` active and every step before it done.
@@ -818,8 +864,12 @@ function setupBar(pct, status) {
   pct = clamp(pct, 0, 100);
   setupPct = pct;
   $('setupRing').style.strokeDashoffset = String(RING * (1 - pct / 100));
+  $('setupDial').style.setProperty('--p', pct / 100); // drives the glowing head at the arc's tip
   $('setupDial').setAttribute('aria-valuenow', String(Math.round(pct)));
-  if (status) $('setupStatus').textContent = status;
+  if (status && status !== $('setupStatus').textContent) {
+    $('setupStatus').textContent = status;
+    playOnce($('setupStatus'), 'swap');
+  }
   $('setupPct').textContent = `${Math.floor(pct)}%`;
 }
 function setDial(state) { $('setupDial').dataset.state = state; }
@@ -844,6 +894,8 @@ function setupBytes(done, total) {
 }
 $('setupStartBtn').addEventListener('click', async () => {
   const btn = $('setupStartBtn');
+  // Starting ends the intro, so its entrance delays never apply to Retry or the running state.
+  $('setupScreen').classList.remove('intro');
   btn.disabled = true;
   btn.classList.add('hidden'); // the dial and steps show progress; back again as Retry on failure
   useSteps(SETUP_STEPS);
@@ -857,12 +909,19 @@ $('setupStartBtn').addEventListener('click', async () => {
     endSteps(true);
     setDial('done');
     $('setupPct').textContent = 'Done';
-    setTimeout(async () => { showScreen('mainScreen'); await applyRecommendedSamples(); scheduleUpdateCheck(); }, 1400);
+    setTimeout(async () => {
+      await afterAnimation($('setupScreen'), 'leaving', $('setupScreen').querySelector('.setup-card'));
+      showScreen('mainScreen');
+      $('setupScreen').classList.remove('leaving');
+      playOnce($('mainScreen'), 'arriving');
+      await applyRecommendedSamples();
+      scheduleUpdateCheck();
+    }, 1400);
   } else {
     setupAppend(`Setup failed: ${result.error}`);
     endSteps(false);
     setDial('error');
-    $('setupStatus').textContent = 'Setup failed';
+    setupBar(setupPct, 'Setup failed');
     $('setupDetail').textContent = 'See the installer output below.';
     document.querySelector('#setupScreen .disclosure').open = true;
     btn.querySelector('.btn-label').textContent = 'Retry setup';
@@ -922,7 +981,7 @@ $('updateInstallBtn').addEventListener('click', async () => {
   $('updateLaterBtn').disabled = true;
   $('updateTitle').textContent = `Downloading Waypoint ${pendingUpdate ? pendingUpdate.version : ''}…`;
   $('updateSub').textContent = 'Waypoint restarts when it is done.';
-  $('updateBar').style.width = '0%';
+  $('updateBar').style.setProperty('--p', 0);
   $('updateProgress').classList.remove('hidden');
   const r = await window.api.installUpdate(); // on success the app restarts before this returns
   if (!r.ok) {
@@ -932,7 +991,7 @@ $('updateInstallBtn').addEventListener('click', async () => {
 });
 window.api.onUpdateProgress((p) => {
   if (p.total) {
-    $('updateBar').style.width = `${clamp((p.done / p.total) * 100, 0, 100)}%`;
+    $('updateBar').style.setProperty('--p', clamp(p.done / p.total, 0, 1));
     $('updateSub').textContent = `${fmtSize(p.done)} of ${fmtSize(p.total)}`;
   }
 });
@@ -986,5 +1045,8 @@ async function recheckGpu() {
   refreshRunButtons();
   const status = await window.api.getEnvStatus();
   if (status.native) { showScreen('mainScreen'); await applyRecommendedSamples(); scheduleUpdateCheck(); recheckGpu(); }
-  else showScreen('setupScreen');
+  else {
+    showScreen('setupScreen');
+    playOnce($('setupScreen'), 'intro', $('setupScreen').querySelector('.dm-pin'));
+  }
 })();
