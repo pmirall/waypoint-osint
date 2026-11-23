@@ -54,3 +54,18 @@ Canonical cross-session state: \`docs/PROJECT_STATE.md\`.
 Phases 1 through 10: \`docs/roadmap-10-phases.md\`.
 Attributions and provider terms must be rechecked before distributing
 benchmark images or model files.
+
+
+## Local double-click launcher
+
+For developers who have installed Node.js, Rust and Windows C++ build tools,
+double-click \`BUILD-AND-RUN-WINDOWS.cmd\` in the clone. It installs npm
+dependencies (if absent), compiles a native unsigned desktop executable using
+\`npm run dist\`, then starts Waypoint Lab. It uses no GitHub Actions. After
+opening, select **Benchmarks** and press **Run benchmark locally**. Normal
+users will eventually receive a packaged Windows installer once the feature
+has passed local QA and independent accuracy tests.
+
+Reports are saved as JSON, CSV and standalone HTML. Click **Open report
+folder** from the Benchmarks tab to access them. Automatic updates are
+disabled until the fork has independent signing/release configuration.
