@@ -62,6 +62,7 @@ const state = {
   mode: 'locate',
   image: null,            // { path, name, bytes, dataUrl }
   busy: false,
+  benchmarkBusy: false,
   runKind: null,          // 'full' | 'refine'
   runFailed: false,
   cancelled: false,
@@ -116,13 +117,19 @@ function setMode(mode) {
   for (const b of document.querySelectorAll('.mode')) b.classList.toggle('is-active', b.dataset.mode === mode);
   $('panel-locate').classList.toggle('is-active', mode === 'locate');
   $('panel-refine').classList.toggle('is-active', mode === 'refine');
+  $('panel-bench').classList.toggle('is-active', mode === 'bench');
+  $('benchWorkspace').classList.toggle('hidden', mode !== 'bench');
+  $('map').classList.toggle('hidden', mode === 'bench');
+  $('legend').classList.toggle('hidden', mode === 'bench');
+  $('fitBtn').classList.toggle('hidden', mode === 'bench');
+  if (mode !== 'bench') setTimeout(() => map.invalidateSize(), 20);
   const showResults = mode === 'locate';
   toggleLayer(layers.results.cands, showResults);
   toggleLayer(layers.refine.point, !showResults);
   applySourceVisibility();
   $('map').classList.toggle('picking', mode === 'refine');
   updateMapHint();
-  fitMode();
+  if (mode !== 'bench') fitMode();
 }
 document.querySelectorAll('.mode').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
 
@@ -261,9 +268,9 @@ if (window.api.onFileDrag) {
 
 /* ============================================================ Busy / run state */
 function refreshRunButtons() {
-  $('runOneBtn').disabled = state.busy || !state.image;
+  $('runOneBtn').disabled = state.busy || state.benchmarkBusy || !state.image;
   const lat = parseFloat($('zoomLat').value), lon = parseFloat($('zoomLon').value);
-  $('runZoomBtn').disabled = state.busy || !state.image || !(isFinite(lat) && isFinite(lon));
+  $('runZoomBtn').disabled = state.busy || state.benchmarkBusy || !state.image || !(isFinite(lat) && isFinite(lon));
   $('refineHint').textContent = state.image
     ? 'Refine compares against the photo loaded in Locate.'
     : 'Load a photo in Locate first. Refine compares against it.';
@@ -588,7 +595,7 @@ function runFailedToStart(e) {
 }
 
 $('runOneBtn').addEventListener('click', async () => {
-  if (!state.image || state.busy) return;
+  if (!state.image || state.busy || state.benchmarkBusy) return;
   clusterResults.innerHTML = '';
   clusters.length = 0;
   candMarkers.length = 0;
@@ -610,7 +617,7 @@ $('runOneBtn').addEventListener('click', async () => {
 });
 
 $('runZoomBtn').addEventListener('click', async () => {
-  if (!state.image || state.busy) return;
+  if (!state.image || state.busy || state.benchmarkBusy) return;
   const lat = parseFloat($('zoomLat').value), lon = parseFloat($('zoomLon').value);
   const radiusKm = parseFloat($('zoomRadius').value);
   if (!(isFinite(lat) && isFinite(lon))) return;
