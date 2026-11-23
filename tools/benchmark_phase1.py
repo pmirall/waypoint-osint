@@ -143,85 +143,129 @@ def evaluate(output):
     output = Path(output)
     rows = json.loads((output / "samples.json").read_text())
     details = []
-    for mode in ("baseline", "phase1"):
-        for gt in rows:
+    for gt in rows:
+        for mode in ("baseline", "phase1"):
             path = output / f"{mode}_{gt['id']}.ndjson"
+            meta_path = output / f"{mode}_{gt['id']}.status.json"
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
             records = []
             if path.exists():
-                for line in path.read_text().splitlines():
+                for line in path.read_text(errors="replace").splitlines():
                     try:
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass
             done = next((r for r in reversed(records) if r.get("event") == "done"), None)
             errors = [r.get("message") for r in records if r.get("event") == "error"]
-            row = dict(gt, variant=mode, error=";".join(str(e) for e in errors))
-            if done:
+            row = dict(gt, variant=mode, run_status=meta.get("status", "missing"),
+                       duration_s=meta.get("duration_s"),
+                       last_stage=meta.get("last_stage", ""),
+                       error=";".join(str(e) for e in errors))
+            if done and not errors and meta.get("status") == "complete":
                 result = done.get("result", {})
                 clusters = result.get("clusters") or []
                 row["n_clusters"] = len(clusters)
-                row["coarse_error_m"] = haversine(gt["gt_lat"],gt["gt_lon"],
-                    clusters[0]["lat"],clusters[0]["lon"]) if clusters else None
+                row["coarse_error_m"] = haversine(gt["gt_lat"], gt["gt_lon"],
+                    clusters[0]["lat"], clusters[0]["lon"]) if clusters else None
                 coord, matches, src = best_pred(result, gt["exclude_mapillary_id"])
                 row["chosen_source"] = src
                 row["n_matching_candidates"] = len(matches)
-                row["best_error_m"] = haversine(gt["gt_lat"],gt["gt_lon"],*coord) if coord else None
+                row["best_error_m"] = haversine(gt["gt_lat"], gt["gt_lon"], *coord) if coord else None
                 row["oracle_retrieval_error_m"] = min((haversine(
-                    gt["gt_lat"],gt["gt_lon"],m["lat"],m["lon"]) for _,m in matches),default=None)
+                    gt["gt_lat"], gt["gt_lon"], m["lat"], m["lon"]) for _, m in matches), default=None)
             else:
-                row.update(n_clusters=0, coarse_error_m=None, chosen_source="failed",
-                           n_matching_candidates=0,best_error_m=None,oracle_retrieval_error_m=None)
+                row.update(n_clusters=0, coarse_error_m=None, chosen_source="unavailable",
+                           n_matching_candidates=0, best_error_m=None,
+                           oracle_retrieval_error_m=None)
             details.append(row)
+
+    # Accuracy is defined over *paired completed runs* only. Otherwise report
+    # runtime failure, not an invented 0% accuracy.
+    paired = {r["id"] for r in details if r["variant"] == "baseline"
+              and r["run_status"] == "complete" and any(
+                  x["id"] == r["id"] and x["variant"] == "phase1"
+                  and x["run_status"] == "complete" for x in details)}
+    print(f"\nPAIRED COMPLETE CASES: {len(paired)}/{len(rows)}", flush=True)
     for mode in ("baseline", "phase1"):
         group = [r for r in details if r["variant"] == mode]
-        n = len(group)
-        def metric(key,t):
-            return sum(r[key] is not None and r[key] <= t for r in group)/n
-        print(f"\n{mode}: total={n}, complete={sum(r['best_error_m'] is not None for r in group)}")
-        for key in ("coarse_error_m","best_error_m","oracle_retrieval_error_m"):
-            print("  ",key,
-                  "med=",round(sorted(r[key] for r in group if r[key] is not None)[
-                      sum(r[key] is not None for r in group)//2],0)
-                       if any(r[key] is not None for r in group) else None,
-                  "accuracy@10m=",metric(key,10),
-                  "@100m=",metric(key,100),
-                  "@1km=",metric(key,1000),
-                  "@25km=",metric(key,25000))
-    import csv as _csv
-    with open(output/"details.csv", "w", newline="") as f:
-        writer = _csv.DictWriter(f, fieldnames=details[0].keys())
+        ready = [r for r in group if r["id"] in paired]
+        print(f"{mode}: completed={sum(r['run_status']=='complete' for r in group)}/{len(group)}, "
+              f"timed_out={sum(r['run_status']=='timeout' for r in group)}, "
+              f"paired={len(ready)}", flush=True)
+        for key in ("coarse_error_m", "best_error_m", "oracle_retrieval_error_m"):
+            vals = [r[key] for r in ready if r[key] is not None]
+            rates = {f"accuracy@{t}m": sum(v <= t for v in vals)/len(ready) if ready else None
+                     for t in (10,100,1000,25000)}
+            print("  ", key, "median_m=", sorted(vals)[len(vals)//2] if vals else None,
+                  "rates=", rates, flush=True)
+
+    with open(output / "details.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=details[0].keys())
         writer.writeheader()
         writer.writerows(details)
-    (output/"summary.json").write_text(json.dumps(details,indent=2))
-    print("Saved", output/"details.csv", output/"summary.json")
+    (output / "summary.json").write_text(json.dumps({
+        "n_images": len(rows), "n_paired_complete": len(paired),
+        "benchmark_valid": bool(paired), "details": details
+    }, indent=2))
+    print("Saved", output/"details.csv", output/"summary.json", flush=True)
+    return bool(paired)
 
 
 def run_tests(root, baseline_binary, phase_binary):
     root = Path(root)
-    images = json.loads((root/"samples.json").read_text())
-    for mode,binary in (("baseline",baseline_binary),("phase1",phase_binary)):
-        for sample in images:
-            image = root/"images"/sample["id"]
+    images = json.loads((root / "samples.json").read_text())
+    timeout = int(os.environ.get("WAYPOINT_BENCH_TIMEOUT_SECONDS", "180"))
+    # Interleave A/B so timeouts cannot prevent any phase-1 image being tested.
+    for sample in images:
+        for mode, binary in (("baseline", baseline_binary), ("phase1", phase_binary)):
+            image = root / "images" / sample["id"]
             cmd = [str(Path(binary).resolve()), "one", "--image_path", str(image.resolve()),
-                   "--model","osv5m", "--num_samples","256", "--num_runs","1",
-                   "--no_sun_refine", "--no_geocode", "--max_images","90",
-                   "--verify_top_n","5", "--top_k","5",
-                   "--retrieval_top_clusters",("1" if mode == "baseline" else "3")]
+                   "--model", "osv5m", "--num_samples", "96", "--num_runs", "1",
+                   "--no_sun_refine", "--no_geocode", "--radius_km", "0.6",
+                   "--max_images", "24", "--verify_top_n", "3", "--top_k", "5",
+                   "--retrieval_top_clusters", ("1" if mode == "baseline" else "3")]
             env = dict(os.environ, WAYPOINT_ACCEL="cpu", WAYPOINT_BENCH_SEED="20261123",
-                       WAYPOINT_ORT_DLL=str((Path("benchdata")/"ort"/"libonnxruntime.so").resolve()),
-                       WAYPOINT_ONNX_DIR=str((Path("benchdata")/"onnx").resolve()))
-            print(f"\nRUN {mode} {sample['id']} at {time.strftime('%H:%M:%S')}",flush=True)
-            start=time.monotonic()
-            try:
-                proc = subprocess.run(cmd,env=env,capture_output=True,text=True,timeout=420)
-                (root/f"{mode}_{sample['id']}.ndjson").write_text(proc.stdout)
-                (root/f"{mode}_{sample['id']}.stderr").write_text(proc.stderr)
-                print(f"exit {proc.returncode}, seconds={time.monotonic()-start:.1f}, "
-                      f"events={len(proc.stdout.splitlines())}, "
-                      f"stderr_tail={proc.stderr[-350:]!r}",flush=True)
-            except subprocess.TimeoutExpired as e:
-                (root/f"{mode}_{sample['id']}.stderr").write_text("timeout: " + str(e))
-                print("TIMED OUT", mode, sample["id"],flush=True)
+                       WAYPOINT_ORT_DLL=str((root / "ort" / "libonnxruntime.so").resolve()),
+                       WAYPOINT_ONNX_DIR=str((root / "onnx").resolve()))
+            print(f"RUN {mode} {sample['id']} at {time.strftime('%H:%M:%S')}", flush=True)
+            start = time.monotonic()
+            stdout_path = root / f"{mode}_{sample['id']}.ndjson"
+            stderr_path = root / f"{mode}_{sample['id']}.stderr"
+            status_path = root / f"{mode}_{sample['id']}.status.json"
+            outcome = "failed"
+            retcode = None
+            # Writing straight to files preserves progress even on timeout.
+            with open(stdout_path, "w") as stdout, open(stderr_path, "w") as stderr:
+                try:
+                    proc = subprocess.run(cmd, env=env, stdout=stdout,
+                                          stderr=stderr, timeout=timeout)
+                    retcode = proc.returncode
+                    outcome = "complete" if retcode == 0 else "failed"
+                except subprocess.TimeoutExpired:
+                    outcome = "timeout"
+            last_stage = None
+            recent = []
+            for line in stdout_path.read_text(errors="replace").splitlines():
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                recent.append(evt)
+                if len(recent) > 6:
+                    recent.pop(0)
+                if evt.get("event") in ("stage_start", "stage_done"):
+                    last_stage = evt.get("stage")
+            duration = round(time.monotonic() - start, 2)
+            status_path.write_text(json.dumps({
+                "id": sample["id"], "variant": mode, "status": outcome,
+                "duration_s": duration, "return_code": retcode,
+                "last_stage": last_stage,
+                "last_events": recent,
+            }, indent=2))
+            tail = stderr_path.read_text(errors="replace")[-650:]
+            print(f"{mode} {sample['id']}: {outcome}, {duration:.1f}s, "
+                  f"last_stage={last_stage}, stderr_tail={tail!r}", flush=True)
+
 
 
 if __name__ == "__main__":
@@ -237,4 +281,4 @@ if __name__ == "__main__":
     elif a.command=="run":
         run_tests(a.root,a.baseline,a.phase1)
     else:
-        evaluate(a.root)
+        raise SystemExit(0 if evaluate(a.root) else 1)

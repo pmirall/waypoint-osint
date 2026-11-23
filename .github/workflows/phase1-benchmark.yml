@@ -9,13 +9,17 @@ on:
       - ".github/workflows/phase1-benchmark.yml"
   workflow_dispatch: {}
 
+concurrency:
+  group: phase1-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 38
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,6 +52,7 @@ jobs:
       - name: Run geolocation on both versions
         run: python3 tools/benchmark_phase1.py run
       - name: Evaluate predictions and save report
+        if: always()
         run: python3 tools/benchmark_phase1.py evaluate
       - name: Upload benchmark results
         if: always()
@@ -59,4 +64,5 @@ jobs:
             benchdata/*.json
             benchdata/*.ndjson
             benchdata/*.stderr
+            benchdata/*.status.json
           retention-days: 14

@@ -39,3 +39,14 @@ benchmark-only patch; this patch is not incorporated into the app. The ORT
 archive is downloaded from a third-party mirror but verified against the
 upstream-pinned Microsoft release SHA-256 before extraction. Previous failed
 runs (e.g. download errors) must not be counted as 0% accuracy.
+
+## Diagnostic performance profile (2026-11-23)
+The first full end-to-end trial timed out on 2 consecutive baseline images
+at 420s each, before reaching phase1. No accuracy result can be inferred.
+The runner is now deliberately **budget-limited** (96 PLONK samples, radius
+0.6km, 24 reference images per source, 3 verification candidates, max 180s
+per image) and interleaves baseline/phase1 per image. Results must NOT be
+presented as the expected full-quality production accuracy.
+Timeouts preserve NDJSON/stderr and last-stage diagnostics. Accuracy is shown
+ONLY for complete A/B pairs; no successful pairs means a failed benchmark,
+not a claim of 0% accuracy. A later full-budget benchmark is still required.
