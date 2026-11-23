@@ -28,7 +28,8 @@ Location of a visually matching street-camera image is NOT target-camera pose.
 - Benchmarks local v1: embedded Tauri UI, 4/50/500 real geotagged photos,
   coarse/precision profiles, local ONNX inference, image/result cache, progress,
   soft per-photo timeout, cancellation, locally saved JSON, CSV and HTML reports.
-- Local build helper: BUILD-AND-RUN-WINDOWS.cmd. No packaged Windows installer verified.
+- Local build helpers: BUILD-AND-RUN-WINDOWS.cmd and BUILD-LOCAL-INSTALLER-WINDOWS.cmd.
+  Installer packaging is unsigned and still needs actual Windows QA.
 - Fork identity is Waypoint Lab and its updater endpoint points at this fork;
   startup auto-update checks disabled to prevent installing upstream releases.
 - Benchmarks local branch has NOT been compiled or exercised as a packaged

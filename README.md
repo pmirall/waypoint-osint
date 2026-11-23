@@ -26,9 +26,10 @@ own CPU/GPU, without GitHub Actions. It caches test images and successful
 predictions, saves JSON/CSV/HTML reports, and supports cancellation.
 
 On Windows with the official Rust, Node and Visual Studio C++ prerequisites,
-double-click **BUILD-AND-RUN-WINDOWS.cmd** for a local, unsigned developer
-build of Waypoint Lab; the desktop interface then provides one-click
-benchmarks. This is source code, **not yet a tested Windows release**.
+double-click **BUILD-AND-RUN-WINDOWS.cmd** to build and launch a local
+unsigned executable, or **BUILD-LOCAL-INSTALLER-WINDOWS.cmd** to generate an
+unsigned Windows NSIS installer. The desktop interface then provides one-click
+benchmarks. Both helpers operate on your PC without GitHub Actions. This is source code, **not yet a tested Windows release**.
 
 See [local benchmark instructions](docs/LOCAL_BENCHMARKS.md),
 [permanent project state](docs/PROJECT_STATE.md), and

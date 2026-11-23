@@ -69,3 +69,14 @@ has passed local QA and independent accuracy tests.
 Reports are saved as JSON, CSV and standalone HTML. Click **Open report
 folder** from the Benchmarks tab to access them. Automatic updates are
 disabled until the fork has independent signing/release configuration.
+
+
+### Local NSIS installer (optional)
+
+Double-click \`BUILD-LOCAL-INSTALLER-WINDOWS.cmd\` after installing Windows
+build prerequisites. It runs \`npm run installer -- --config
+src-tauri/tauri.local.conf.json\`. The config override sets
+\`bundle.createUpdaterArtifacts=false\`, so no upstream signing key is needed.
+The resulting unsigned installer is in \`src-tauri/target/release/bundle/nsis\`.
+It must be QA-tested before sharing; Windows may show a SmartScreen warning.
+No GitHub Actions are required.
