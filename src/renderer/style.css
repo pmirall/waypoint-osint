@@ -742,3 +742,37 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); letter-spacing: -.01em
 }
 
 #hardwareInfo { white-space: pre-line; }
+
+
+/* ---------- Local-first benchmark lab ---------- */
+.bench-field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.bench-field .input { width: 100%; }
+.bench-check { display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; margin: 13px 0; line-height: 1.4; }
+.bench-check input { accent-color: var(--accent); margin-top: 2px; }
+.bench-path { overflow-wrap: anywhere; user-select: text; }
+.bench-workspace { position: absolute; inset: 0; overflow-y: auto; padding: clamp(20px, 3.5vw, 48px); background: var(--panel); color: var(--text); }
+.bench-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.bench-head h1 { font-size: clamp(21px, 3vw, 32px); margin: 7px 0 5px; letter-spacing: -.035em; }
+.bench-head p { color: var(--muted); font-size: 13px; }
+.bench-kicker { font-size: 10px; font-weight: 750; letter-spacing: .13em; color: var(--accent); }
+.bench-counter { font-size: 24px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bench-meter { height: 8px; margin: 24px 0; background: var(--sunken); border: 1px solid var(--line); border-radius: 100px; overflow: hidden; }
+.bench-meter > div { height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+.bench-stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(115px,1fr)); gap: 10px; }
+.bench-stats > div { border: 1px solid var(--line); border-radius: 11px; padding: 16px 12px; background: var(--sunken); display: flex; flex-direction: column; gap: 7px; }
+.bench-stats span { color: var(--muted); font-size: 11px; }
+.bench-stats b { font-size: clamp(19px,2.5vw,28px); font-variant-numeric: tabular-nums; }
+.bench-disclaimer { margin: 16px 0 25px; color: var(--muted); line-height: 1.55; font-size: 12.5px; }
+.bench-workspace h2 { font-size: 14px; margin: 24px 0 12px; }
+.bench-table-scroll { overflow-x: auto; background: var(--sunken); border: 1px solid var(--line); border-radius: 11px; }
+.bench-table { border-collapse: collapse; width: 100%; min-width: 580px; font-size: 12.5px; }
+.bench-table th { text-align: left; color: var(--muted); background: var(--panel); font-weight: 650; padding: 13px; }
+.bench-table td { border-top: 1px solid var(--line); padding: 12px 13px; font-variant-numeric: tabular-nums; }
+.bench-table tr:hover td { background: var(--panel); }
+.bench-empty { color: var(--muted); text-align: center; padding: 28px !important; }
+.bench-status-complete { color: var(--good); }
+.bench-status-timeout, .bench-status-error { color: var(--bad); }
+@media (max-width: 800px) {
+  .bench-workspace { padding: 20px 16px; }
+  .bench-stats { grid-template-columns: repeat(2,1fr); }
+}

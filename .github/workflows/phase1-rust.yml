@@ -1,12 +1,6 @@
 name: Phase 1 Rust checks
 
 on:
-  push:
-    branches:
-      - "feat/phase1-**"
-  pull_request:
-    branches:
-      - main
   workflow_dispatch: {}
 
 permissions:

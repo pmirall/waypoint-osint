@@ -29,6 +29,8 @@ use waypoint_core::onnx::{init_runtime, Accel, ORT_LIB};
 use waypoint_core::plonk::{self, PlonkStep};
 use waypoint_core::{run as core_run, Cancel, Mode, RunArgs as CoreArgs, Sink};
 
+mod benchmark;
+
 // Aim the default Samples value at ~10 s of sampling for one run.
 const CALIBRATION_TARGET_SECONDS: f64 = 10.0;
 const IMAGE_EXTS: [&str; 5] = ["jpg", "jpeg", "png", "bmp", "webp"];
@@ -773,6 +775,9 @@ struct RunArgs {
 /// `exit` event, which is always sent once the run has ended, whether it
 /// finished, failed or was cancelled.
 fn run_pipeline(app: AppHandle, mode: Mode, args: RunArgs) -> Result<u32, String> {
+    if app.state::<benchmark::BenchmarkState>().is_running() {
+        return Err("A local benchmark is running. Stop it before locating another photo.".into());
+    }
     let state = app.state::<AppState>();
     let mut active = state.active_run.lock().unwrap();
     if active.is_some() {
@@ -864,6 +869,7 @@ pub fn run() {
                 active_run: Mutex::default(),
                 image: Mutex::default(),
             });
+            app.manage(benchmark::BenchmarkState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -882,6 +888,10 @@ pub fn run() {
             run_one,
             run_point,
             cancel_run,
+            benchmark::benchmark_start,
+            benchmark::benchmark_cancel,
+            benchmark::benchmark_status,
+            benchmark::benchmark_open_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Waypoint");

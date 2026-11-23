@@ -18,6 +18,27 @@
   <img src="assets/screenshot.png" width="920" alt="Waypoint results view: a candidate on an interactive map with ranked street-level matches" />
 </p>
 
+## Waypoint Lab (experimental fork)
+
+This branch adds a **Benchmarks** tab to the local desktop application.
+Click **Run benchmark locally** to evaluate public geotagged photos on your
+own CPU/GPU, without GitHub Actions. It caches test images and successful
+predictions, saves JSON/CSV/HTML reports, and supports cancellation.
+
+On Windows with the official Rust, Node and Visual Studio C++ prerequisites,
+double-click **BUILD-AND-RUN-WINDOWS.cmd** to build and launch a local
+unsigned executable, or **BUILD-LOCAL-INSTALLER-WINDOWS.cmd** to generate an
+unsigned Windows NSIS installer. The desktop interface then provides one-click
+benchmarks. Both helpers operate on your PC without GitHub Actions. This is source code, **not yet a tested Windows release**.
+
+See [local benchmark instructions](docs/LOCAL_BENCHMARKS.md),
+[permanent project state](docs/PROJECT_STATE.md), and
+[the ten-phase accuracy roadmap](docs/roadmap-10-phases.md).
+
+**Accuracy caveat:** No general-purpose 10 m accuracy has been demonstrated.
+The fast benchmark reports PLONK cluster-centre error, not the true target
+camera position. Do not use these preliminary results as accuracy claims.
+
 ## What it is
 
 Waypoint takes a single outdoor photo and estimates **where on Earth it was taken**. It generates a

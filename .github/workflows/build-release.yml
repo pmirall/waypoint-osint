@@ -1,13 +1,6 @@
 name: Build and release
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "assets/**"
-      - ".gitignore"
-      - "LICENSE"
   workflow_dispatch: {}
 
 permissions:

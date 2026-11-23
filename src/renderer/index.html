@@ -69,6 +69,7 @@
       <div class="modes" role="tablist">
         <button class="mode is-active" data-mode="locate" role="tab">Locate</button>
         <button class="mode" data-mode="refine" role="tab">Refine</button>
+        <button class="mode" data-mode="bench" role="tab">Benchmarks</button>
       </div>
 
       <div class="run-status">
@@ -157,6 +158,45 @@
             <div id="zoomResults" class="sources-flat"></div>
           </section>
         </div>
+
+        <!-- Benchmark processing happens locally on this computer. -->
+        <div id="panel-bench" class="panel">
+          <section class="block">
+            <h2 class="block-title">Local benchmark lab</h2>
+            <p class="block-sub">Measure accuracy on geotagged photos. No GitHub Actions minutes.</p>
+            <label class="field bench-field"><span class="field-label">Photographs</span>
+              <select class="input" id="benchPreset">
+                <option value="smoke">4 — smoke test</option>
+                <option value="pilot">50 — pilot</option>
+                <option value="full">500 — extended</option>
+              </select>
+            </label>
+            <label class="field bench-field"><span class="field-label">Test profile</span>
+              <select class="input" id="benchProfile">
+                <option value="coarse">Fast — PLONK coarse region</option>
+                <option value="precision">Street-level — reference image search</option>
+              </select>
+            </label>
+            <label class="field bench-field"><span class="field-label">Per-photo timeout (cooperative)</span>
+              <select class="input" id="benchTimeout">
+                <option value="60">60 seconds</option>
+                <option value="180" selected>180 seconds</option>
+                <option value="300">300 seconds</option>
+                <option value="600">600 seconds</option>
+              </select>
+            </label>
+            <label class="bench-check"><input type="checkbox" id="benchCache" checked /> Reuse saved images and successful predictions</label>
+            <button id="benchStartBtn" class="btn btn-accent btn-block">Run benchmark locally</button>
+            <button id="benchCancelBtn" class="btn btn-quiet btn-block hidden">Stop benchmark</button>
+            <p class="hint">Runs inside Waypoint using the models you already installed. GPU auto-detection; no additional Python setup.</p>
+          </section>
+          <section class="block">
+            <h2 class="block-title">Stored reports</h2>
+            <button id="benchLatestBtn" class="btn btn-quiet btn-block">Show latest report</button>
+            <button id="benchOpenFolderBtn" class="btn btn-quiet btn-block">Open report folder (JSON / CSV / HTML)</button>
+            <p id="benchReportPath" class="hint bench-path"></p>
+          </section>
+        </div>
       </aside>
 
       <main class="mapwrap">
@@ -169,6 +209,34 @@
         <button id="fitBtn" class="map-overlay map-fit icon-btn" title="Fit results"><svg class="i"><use href="#i-fit"/></svg></button>
         <div id="mapHint" class="map-overlay map-hint hidden">Click the map to set the refine point</div>
 
+
+        <section id="benchWorkspace" class="bench-workspace hidden" aria-live="polite">
+          <header class="bench-head">
+            <div>
+              <div class="bench-kicker">LOCAL · PRIVATE · NO GITHUB ACTIONS</div>
+              <h1>Geolocation benchmarks</h1>
+              <p id="benchStatusText">Ready to benchmark the installed Waypoint engine.</p>
+            </div>
+            <div class="bench-counter" id="benchCounter">0 / 0</div>
+          </header>
+          <div class="bench-meter"><div id="benchMeterFill"></div></div>
+          <div class="bench-stats">
+            <div><span>Coverage</span><b id="benchCoverage">—</b></div>
+            <div><span>≤10 m</span><b id="bench10">—</b></div>
+            <div><span>≤100 m</span><b id="bench100">—</b></div>
+            <div><span>≤1 km</span><b id="bench1k">—</b></div>
+            <div><span>Median error</span><b id="benchMedian">—</b></div>
+          </div>
+          <p class="bench-disclaimer" id="benchMetricNote">The fast mode reports coarse PLONK error, not camera-level accuracy.</p>
+          <h2>Per-photo results</h2>
+          <div class="bench-table-scroll">
+            <table class="bench-table">
+              <thead><tr><th>Image</th><th>Country</th><th>Status</th><th>Method</th><th>Error</th><th>Duration</th></tr></thead>
+              <tbody id="benchRows"><tr><td colspan="6" class="bench-empty">No results yet.</td></tr></tbody>
+            </table>
+          </div>
+          <p class="bench-disclaimer">All reports are stored on your PC. A reference-camera coordinate is not necessarily the actual target-camera position; 10 m accuracy is not yet validated.</p>
+        </section>
         <div id="logDrawer" class="drawer hidden">
           <div class="drawer-head">
             <span>Pipeline log</span>
@@ -252,5 +320,6 @@
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="api.js"></script>
   <script src="renderer.js"></script>
+  <script src="benchmarks.js"></script>
 </body>
 </html>
