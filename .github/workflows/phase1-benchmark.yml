@@ -1,0 +1,51 @@
+name: Benchmark phase 1 vs upstream
+
+on:
+  push:
+    branches:
+      - "feat/phase1-retrieval-coverage"
+    paths:
+      - "tools/benchmark_phase1.py"
+      - ".github/workflows/phase1-benchmark.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Git worktree for exact upstream baseline
+        run: git worktree add --detach baseline 502318a7da42bdc38af2ad2f87152492dbf9d671
+      - name: Build baseline
+        working-directory: baseline/waypoint-core
+        run: cargo build --release --locked --bin waypoint-cli
+      - name: Build phase 1
+        working-directory: waypoint-core
+        run: cargo build --release --locked --bin waypoint-cli
+      - name: Download real photos and model weights
+        run: python3 tools/benchmark_phase1.py setup
+      - name: Run geolocation on both versions
+        run: python3 tools/benchmark_phase1.py run
+      - name: Evaluate predictions and save report
+        if: always()
+        run: python3 tools/benchmark_phase1.py evaluate
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-geolocation-benchmark
+          path: |
+            benchdata/*.csv
+            benchdata/*.json
+            benchdata/*.ndjson
+            benchdata/*.stderr
+          retention-days: 14
