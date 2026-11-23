@@ -40,5 +40,10 @@
     runPoint: (args) => invoke('run_point', { args }),
     cancelRun: () => invoke('cancel_run'),
     onPipelineEvent: (cb) => listen('pipeline-event', (e) => cb(e.payload)),
+    // Local-only benchmark commands; no GitHub Actions invocation.
+    benchmarkStart: (opts) => invoke('benchmark_start', { opts }),
+    benchmarkCancel: () => invoke('benchmark_cancel'),
+    benchmarkStatus: () => invoke('benchmark_status'),
+    onBenchmarkEvent: (cb) => listen('benchmark-event', (e) => cb(e.payload)),
   };
 })();
