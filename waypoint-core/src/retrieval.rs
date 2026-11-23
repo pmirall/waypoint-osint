@@ -18,12 +18,14 @@ pub type Progress<'a> = &'a mut dyn FnMut(&str, usize, usize);
 pub struct Ctx<'a> {
     pub models: &'a dyn Models,
     pub target: &'a Path,
+    pub fov: f64,
     pub cancel: &'a Cancel,
     pub log: &'a (dyn Fn(&str) + Sync),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ClusterInfo {
+    pub search_seeds: Vec<(f64, f64)>,
     pub lat: f64,
     pub lon: f64,
     pub lat_std: f64,
@@ -33,8 +35,61 @@ pub struct ClusterInfo {
 impl ClusterInfo {
     pub fn from_json(c: &Value) -> Self {
         let f = |k: &str| c.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-        ClusterInfo { lat: f("lat"), lon: f("lon"), lat_std: f("lat_std"), lon_std: f("lon_std") }
+        let search_seeds = c.get("search_seeds").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|p| {
+                let p = p.as_array()?;
+                Some((p.first()?.as_f64()?, p.get(1)?.as_f64()?))
+            }).collect()).unwrap_or_default();
+        ClusterInfo { lat: f("lat"), lon: f("lon"), lat_std: f("lat_std"), lon_std: f("lon_std"), search_seeds }
     }
+}
+
+/// Search several representative locations of a broad PLONK mode without
+/// multiplying each source's image budget by the number of search seeds.
+pub fn planned_seeds(c: &ClusterInfo, max_images: usize) -> Vec<(ClusterInfo, usize)> {
+    let mut centers = vec![(c.lat, c.lon)];
+    if max_images >= 90 {
+        for &(lat, lon) in &c.search_seeds {
+            if centers.iter().all(|&(a, b)| crate::geo::haversine_m(a, b, lat, lon) >= 6000.0) {
+                centers.push((lat, lon));
+            }
+            if centers.len() >= 3 { break; }
+        }
+    }
+    let count = centers.len();
+    let base = max_images / count;
+    let rest = max_images % count;
+    centers.into_iter().enumerate().map(|(i, (lat, lon))| {
+        let mut local = c.clone();
+        if i != 0 { local.lat_std = 0.0; local.lon_std = 0.0; }
+        local.lat = lat;
+        local.lon = lon;
+        local.search_seeds.clear();
+        (local, base + usize::from(i < rest))
+    }).collect()
+}
+
+/// Merge candidate matches from representative search locations.
+pub fn merge_matches(mut rows: Vec<Value>, limit: usize) -> Vec<Value> {
+    rows.sort_by(|a, b| {
+        let score = |x: &Value| {
+            let inl = x.get("inliers").and_then(Value::as_u64).unwrap_or(0) as f64;
+            let tot = x.get("total_matches").and_then(Value::as_u64).unwrap_or(0) as f64;
+            let sim = x.get("similarity").and_then(Value::as_f64).unwrap_or(0.0);
+            if tot >= 12.0 && inl >= 12.0 {
+                2.0 + (inl / tot).min(1.0) + (inl + 1.0).ln() * 0.1
+            } else { sim }
+        };
+        score(b).total_cmp(&score(a))
+    });
+    let mut unique = std::collections::HashSet::new();
+    rows.retain(|m| {
+        let key = m.get("mapillary_url").or_else(|| m.get("street_view_url"))
+            .or_else(|| m.get("panoramax_url")).and_then(Value::as_str).unwrap_or("");
+        unique.insert(key.to_owned())
+    });
+    rows.truncate(limit);
+    rows
 }
 
 /// Search radius from PLONK's own reported spread for the cluster, clamped.

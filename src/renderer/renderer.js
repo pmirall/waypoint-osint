@@ -32,7 +32,7 @@ function playOnce(el, cls, endOn = el) {
 // How many top clusters the backend refines with retrieval imagery. Kept in
 // sync with --retrieval_top_clusters so the step list shows the whole plan
 // up front instead of growing mid-run.
-const RETRIEVAL_TOP = 1;
+const RETRIEVAL_TOP = 3;
 
 const STAGE_LABELS = {
   model_load: 'Load model',

@@ -27,25 +27,45 @@ fn search_nearby_images(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, max_image
     let bbox = format!("{min_lon},{min_lat},{max_lon},{max_lat}");
     let limit = max_images.min(100).to_string(); // STAC page size cap on this instance
     let agent = net::agent(1, 20);
-    let data = match net::get_json(&agent, SEARCH_URL, &[("bbox", bbox.as_str()), ("limit", limit.as_str())]) {
-        Ok(v) => v,
-        Err(e) => {
-            (ctx.log)(&format!("Panoramax search failed: {e}"));
-            return vec![];
-        }
-    };
     let mut results = vec![];
-    for feat in data.get("features").and_then(Value::as_array).into_iter().flatten() {
-        let coords = feat.pointer("/geometry/coordinates").and_then(Value::as_array);
-        let href = |k: &str| feat.pointer(&format!("/assets/{k}/href")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
-        let thumb = href("sd").or_else(|| href("thumb"));
-        let (Some(coords), Some(thumb), Some(id)) = (coords, thumb, feat.get("id").and_then(Value::as_str)) else { continue };
-        let (Some(lo), Some(la)) = (coords.first().and_then(Value::as_f64), coords.get(1).and_then(Value::as_f64)) else { continue };
-        results.push(Found { id: id.to_string(), lat: la, lon: lo, thumb_url: thumb });
+    let mut seen = std::collections::HashSet::new();
+    let mut next: Option<String> = None;
+    let pool_target = max_images.saturating_mul(3);
+    for page in 0..8 {
+        if results.len() >= pool_target { break; }
+        let data = if page == 0 {
+            net::get_json(&agent, SEARCH_URL, &[("bbox", bbox.as_str()), ("limit", limit.as_str())])
+        } else {
+            net::get_json(&agent, next.as_deref().unwrap_or(SEARCH_URL), &[])
+        };
+        let data = match data {
+            Ok(v) => v,
+            Err(e) => {
+                (ctx.log)(&format!("Panoramax page {} failed: {e}", page + 1));
+                break;
+            }
+        };
+        for feat in data.get("features").and_then(Value::as_array).into_iter().flatten() {
+            let coords = feat.pointer("/geometry/coordinates").and_then(Value::as_array);
+            let href = |k: &str| feat.pointer(&format!("/assets/{k}/href")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            let thumb = href("sd").or_else(|| href("thumb"));
+            let (Some(coords), Some(thumb), Some(id)) = (coords, thumb, feat.get("id").and_then(Value::as_str)) else { continue };
+            if !seen.insert(id.to_owned()) { continue; }
+            let (Some(lo), Some(la)) = (coords.first().and_then(Value::as_f64), coords.get(1).and_then(Value::as_f64)) else { continue };
+            results.push(Found { id: id.to_string(), lat: la, lon: lo, thumb_url: thumb });
+        }
+        // Never follow third-party URLs supplied by STAC metadata.
+        next = data.get("links").and_then(Value::as_array).and_then(|links| {
+            links.iter().find(|l| l.get("rel").and_then(Value::as_str) == Some("next")
+                && l.get("method").and_then(Value::as_str).unwrap_or("GET") == "GET")
+                .and_then(|l| l.get("href").and_then(Value::as_str))
+                .filter(|url| url.starts_with("https://api.panoramax.xyz/"))
+                .map(str::to_string)
+        });
+        if next.is_none() { break; }
     }
     (ctx.log)(&format!("Panoramax: found {} candidate images", results.len()));
-    results.truncate(max_images);
-    results
+    crate::search::diverse(results, max_images, (lat, lon), |p| (p.lat, p.lon))
 }
 
 pub fn refine_with_panoramax(ctx: &Ctx, cluster: &ClusterInfo, radius_km: Option<f64>, max_images: usize, verify: bool, verify_top_n: usize, on_progress: Progress) -> Result<Vec<Value>> {
