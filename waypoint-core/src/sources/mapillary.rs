@@ -61,7 +61,7 @@ pub fn search_nearby_images(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, token
     let total = tiles.len();
     let mut seen: HashSet<String> = HashSet::new();
     let mut results: Vec<Found> = vec![];
-    par_for_each_completed(tiles, SEARCH_WORKERS, ctx.cancel, |t| query_tile(&agent, t, token, 5), |done, _i, items| {
+    par_for_each_completed(tiles, SEARCH_WORKERS, ctx.cancel, |t| query_tile(&agent, t, token, 25), |done, _i, items| {
         on_progress(done, total);
         for item in items {
             let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
@@ -76,8 +76,7 @@ pub fn search_nearby_images(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, token
         }
     })?;
     (ctx.log)(&format!("Mapillary: found {} candidate images", results.len()));
-    results.truncate(max_images);
-    Ok(results)
+    Ok(crate::search::diverse(results, max_images, (lat, lon), |p| (p.lat, p.lon)))
 }
 
 pub use crate::imgio::decode_rgb;

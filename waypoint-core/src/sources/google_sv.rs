@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::geo::haversine_m;
 use crate::net;
 use crate::retrieval::{cluster_radius_km, score_and_verify, ClusterInfo, Ctx, Progress, Scorable};
-use crate::util::{par_for_each_completed, Result, Rng};
+use crate::util::{par_for_each_completed, Result};
 
 const TILE_HEADERS: [(&str, &str); 3] = [
     ("origin", "https://www.google.com"),
@@ -23,7 +23,7 @@ const IMGX: u32 = 4;
 const IMGY: u32 = 2; // panorama tile grid at zoom=2
 const TILE_SIZE: u32 = 512;
 const MAX_WORKERS: usize = 20;
-const ROAD_SAMPLE_SPACING_M: f64 = 60.0;
+const ROAD_SAMPLE_SPACING_M: f64 = 30.0;
 
 pub struct Pano {
     pub panoid: String,
@@ -79,12 +79,7 @@ pub fn road_sample_points(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, spacing
             }
         }
     }
-    if points.len() > max_points {
-        let mut rng = Rng::from_time();
-        let idx = rng.choice_no_replace(points.len(), max_points);
-        points = idx.into_iter().map(|i| points[i]).collect();
-    }
-    Ok(points)
+    Ok(crate::search::diverse(points, max_points, (lat, lon), |p| *p))
 }
 
 fn re_ids() -> &'static Regex {
@@ -133,7 +128,7 @@ fn query_panoids(agent: &ureq::Agent, lat: f64, lon: f64) -> Vec<Pano> {
 }
 
 pub fn search_panoramas(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, max_images: usize, on_progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<Pano>> {
-    let points = road_sample_points(ctx, lat, lon, radius_km, ROAD_SAMPLE_SPACING_M, 400)?;
+    let points = road_sample_points(ctx, lat, lon, radius_km, ROAD_SAMPLE_SPACING_M, 800)?;
     if points.is_empty() {
         (ctx.log)("Google SV: no road geometry found nearby, cannot sample panoids.");
         return Ok(vec![]);
@@ -152,8 +147,7 @@ pub fn search_panoramas(ctx: &Ctx, lat: f64, lon: f64, radius_km: f64, max_image
         }
     })?;
     (ctx.log)(&format!("Google SV: found {} distinct panoramas", results.len()));
-    results.truncate(max_images);
-    Ok(results)
+    Ok(crate::search::diverse(results, max_images, (lat, lon), |p| (p.lat, p.lon)))
 }
 
 fn download_tile(agent: &ureq::Agent, x: u32, y: u32, panoid: &str) -> Option<Vec<u8>> {
@@ -210,19 +204,47 @@ pub fn refine_with_google_sv(ctx: &Ctx, cluster: &ClusterInfo, radius_km: Option
     if images.iter().all(Option::is_none) {
         return Ok(vec![]);
     }
-    let cands: Vec<Scorable> = panos
-        .into_iter()
-        .zip(images)
-        .filter_map(|(p, img)| {
-            img.map(|image| Scorable {
+    // Render rectilinear camera crops rather than comparing a 360-degree
+    // equirectangular panorama with a conventional photograph.
+    let aspect = crate::imgio::open_rgb(ctx.target)
+        .map(|im| im.width() as f64 / im.height().max(1) as f64)
+        .unwrap_or(4.0 / 3.0);
+    // Coarse heading pass: reduce processing for panoramas with no resemblance.
+    let preview_width = if aspect < 1.0 { 176_u32 } else { 256_u32 };
+    let preview_height = (preview_width as f64 / aspect).round().clamp(144.0, 384.0) as u32;
+    let target_emb = ctx.models.embed_path(ctx.target)?;
+    let mut ranked_panos = Vec::new();
+    for (p, img) in panos.into_iter().zip(images) {
+        ctx.cancel.check()?;
+        let Some(pano) = img else { continue; };
+        let preview: Vec<RgbImage> = (0..6).map(|dir| {
+            crate::perspective::render(&pano, dir as f64 * 60.0, ctx.fov.clamp(65.0, 105.0), preview_width, preview_height)
+        }).collect();
+        let refs: Vec<&RgbImage> = preview.iter().collect();
+        let embs = ctx.models.embed(&refs)?;
+        let score = embs.iter().map(|e| crate::retrieval::cosine_sim(&target_emb, e))
+            .fold(f64::NEG_INFINITY, f64::max);
+        ranked_panos.push((score, p, pano));
+    }
+    ranked_panos.sort_by(|a, b| b.0.total_cmp(&a.0));
+    ranked_panos.truncate(max_images.min(60));
+
+    // Fine pass: eight overlapping headings for the strongest panoramas.
+    let width = if aspect < 1.0 { 320_u32 } else { 512_u32 };
+    let height = (width as f64 / aspect).round().clamp(256.0, 768.0) as u32;
+    let mut cands = Vec::new();
+    for (_, p, pano) in ranked_panos {
+        for dir in 0..8 {
+            cands.push(Scorable {
                 lat: p.lat,
                 lon: p.lon,
                 url: ("street_view_url", format!("https://www.google.com/maps?q=&layer=c&cbll={},{}", p.lat, p.lon)),
-                image,
-            })
-        })
-        .collect();
-    score_and_verify(ctx, cands, verify, verify_top_n, 5, on_progress)
+                image: crate::perspective::render(&pano, dir as f64 * 45.0, ctx.fov.clamp(50.0, 100.0), width, height),
+            });
+        }
+    }
+    score_and_verify(ctx, cands, verify, verify_top_n.max(30), 120, on_progress)
+        .map(|results| crate::retrieval::merge_matches(results, 5))
 }
 
 #[cfg(test)]
