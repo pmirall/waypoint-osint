@@ -1051,7 +1051,7 @@ async function recheckGpu() {
   resetSteps('full');
   refreshRunButtons();
   const status = await window.api.getEnvStatus();
-  if (status.native) { showScreen('mainScreen'); await applyRecommendedSamples(); scheduleUpdateCheck(); recheckGpu(); }
+  if (status.native) { showScreen('mainScreen'); await applyRecommendedSamples(); recheckGpu(); }
   else {
     showScreen('setupScreen');
     playOnce($('setupScreen'), 'intro', $('setupScreen').querySelector('.dm-pin'));
