@@ -891,6 +891,7 @@ pub fn run() {
             benchmark::benchmark_start,
             benchmark::benchmark_cancel,
             benchmark::benchmark_status,
+            benchmark::benchmark_open_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Waypoint");

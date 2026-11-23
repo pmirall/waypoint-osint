@@ -44,6 +44,7 @@
     benchmarkStart: (opts) => invoke('benchmark_start', { opts }),
     benchmarkCancel: () => invoke('benchmark_cancel'),
     benchmarkStatus: () => invoke('benchmark_status'),
+    benchmarkOpenFolder: () => invoke('benchmark_open_folder'),
     onBenchmarkEvent: (cb) => listen('benchmark-event', (e) => cb(e.payload)),
   };
 })();

@@ -128,6 +128,10 @@
   });
 
   el('benchLatestBtn').addEventListener('click', restore);
+  el('benchOpenFolderBtn').addEventListener('click', async () => {
+    try { await window.api.benchmarkOpenFolder(); }
+    catch (e) { el('benchStatusText').textContent = 'Could not open folder: ' + String(e); }
+  });
 
   window.api.onBenchmarkEvent(p => {
     switch (p.event) {
