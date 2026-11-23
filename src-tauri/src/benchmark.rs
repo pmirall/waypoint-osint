@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use waypoint_core::geo::haversine_m;
 use waypoint_core::native;
 use waypoint_core::{run as core_run, Cancel, Mode, RunArgs, Sink};
@@ -334,6 +335,62 @@ fn metrics(rows: &[Value], n: usize, profile: &str) -> Value {
     })
 }
 
+
+fn field_text(row: &Value, key: &str) -> String {
+    match row.get(key) {
+        Some(Value::String(x)) => x.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(v) => v.to_string(),
+    }
+}
+
+fn csv_quote(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\"").replace('\n', " ").replace('\r', " "))
+}
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;")
+        .replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Export separate portable reports without bundling or redistributing dataset images.
+fn export_report(path: &Path, report: &Value) -> Result<(PathBuf, PathBuf), String> {
+    let keys = ["id", "country", "status", "method", "gt_lat", "gt_lon",
+                "error_m", "coarse_error_m", "oracle_error_m",
+                "duration_s", "last_stage", "error"];
+    let mut csv = keys.join(",");
+    csv.push('\n');
+    let mut body = String::new();
+    for row in report["rows"].as_array().into_iter().flatten() {
+        let values: Vec<String> = keys.iter().map(|key| field_text(row, key)).collect();
+        csv.push_str(&values.iter().map(|v| csv_quote(v)).collect::<Vec<_>>().join(","));
+        csv.push('\n');
+        body.push_str("<tr>");
+        for v in values {
+            body.push_str("<td>");
+            body.push_str(&html_escape(&v));
+            body.push_str("</td>");
+        }
+        body.push_str("</tr>\n");
+    }
+    let title = "Waypoint Local Benchmark";
+    let metrics = html_escape(&serde_json::to_string_pretty(&report["metrics"])
+        .map_err(|e| e.to_string())?);
+    let html = format!(
+        "<!DOCTYPE html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title>\
+         <style>body{{font:14px system-ui;margin:30px;color:#142029}}\
+         table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccd5da;padding:8px;text-align:left}}\
+         th{{background:#eff4f6}}pre{{background:#f4f7f9;padding:16px;border-radius:8px;overflow:auto}}\
+         </style><h1>{title}</h1><p>Runs locally. Accuracy is not camera-pose validation.</p>\
+         <pre>{metrics}</pre><table><thead><tr>{}</tr></thead><tbody>{body}</tbody></table></html>",
+        keys.iter().map(|k| format!("<th>{k}</th>")).collect::<String>()
+    );
+    let csv_path = path.with_extension("csv");
+    let html_path = path.with_extension("html");
+    fs::write(&csv_path, csv).map_err(|e| e.to_string())?;
+    fs::write(&html_path, html).map_err(|e| e.to_string())?;
+    Ok((csv_path, html_path))
+}
+
 fn run(app: AppHandle, opts: BenchmarkOptions, stopped: Arc<AtomicBool>) -> Result<(), String> {
     let dir = bench_root(&app);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -476,7 +533,11 @@ fn run(app: AppHandle, opts: BenchmarkOptions, stopped: Arc<AtomicBool>) -> Resu
         "rows": rows, "metrics": metrics(&rows, count, profile)
     });
     write_json(&report_file, &report)?;
-    emit(&app, "finished", json!({ "report": report, "report_path": report_file.to_string_lossy() }));
+    let exports = export_report(&report_file, &report).ok();
+    emit(&app, "finished", json!({ "report": report,
+        "report_path": report_file.to_string_lossy(),
+        "csv_path": exports.as_ref().map(|e| e.0.to_string_lossy().to_string()),
+        "html_path": exports.as_ref().map(|e| e.1.to_string_lossy().to_string()) }));
     Ok(())
 }
 
@@ -534,6 +595,14 @@ pub fn benchmark_status(app: AppHandle) -> Value {
         "report_dir": root.to_string_lossy(),
         "github_actions": false
     })
+}
+
+#[tauri::command]
+pub fn benchmark_open_folder(app: AppHandle) -> Result<(), String> {
+    let path = bench_root(&app).join("reports");
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    app.opener().open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("Could not open benchmark folder: {e}"))
 }
 
 #[cfg(test)]
