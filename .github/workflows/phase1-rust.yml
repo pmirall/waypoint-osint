@@ -25,3 +25,5 @@ jobs:
         run: cargo test --release --locked --manifest-path waypoint-core/Cargo.toml
       - name: Check Waypoint core
         run: cargo check --locked --manifest-path waypoint-core/Cargo.toml
+      - name: Test accuracy metric evaluator
+        run: python3 tools/test_evaluate_accuracy.py
