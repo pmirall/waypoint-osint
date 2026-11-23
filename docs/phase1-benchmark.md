@@ -33,3 +33,9 @@ Do not upload model files to the public repository (StreetCLIP is CC BY-NC 4.0).
 
 Check Actions' "Benchmark phase 1 vs upstream" workflow for all raw logs,
 downloadable reports, failures and resource limitations.
+
+Baseline and phase1 builds receive the **same fixed PLONK seed** via a local
+benchmark-only patch; this patch is not incorporated into the app. The ORT
+archive is downloaded from a third-party mirror but verified against the
+upstream-pinned Microsoft release SHA-256 before extraction. Previous failed
+runs (e.g. download errors) must not be counted as 0% accuracy.

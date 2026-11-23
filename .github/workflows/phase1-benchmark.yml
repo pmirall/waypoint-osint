@@ -25,6 +25,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Git worktree for exact upstream baseline
         run: git worktree add --detach baseline 502318a7da42bdc38af2ad2f87152492dbf9d671
+      - name: Apply benchmark-only deterministic sampler seed to both trees
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in (Path("baseline/waypoint-core/src/native.rs"), Path("waypoint-core/src/native.rs")):
+              s = path.read_text()
+              old = "let seed = seed.unwrap_or_else(|| {"
+              new = ('let seed = seed.or_else(|| std::env::var("WAYPOINT_BENCH_SEED").ok()'
+                     '.and_then(|x| x.parse::<u64>().ok())).unwrap_or_else(|| {')
+              assert s.count(old) == 1, (path, "seed hook missing")
+              path.write_text(s.replace(old, new))
+          PY
       - name: Build baseline
         working-directory: baseline/waypoint-core
         run: cargo build --release --locked --bin waypoint-cli
@@ -36,7 +48,6 @@ jobs:
       - name: Run geolocation on both versions
         run: python3 tools/benchmark_phase1.py run
       - name: Evaluate predictions and save report
-        if: always()
         run: python3 tools/benchmark_phase1.py evaluate
       - name: Upload benchmark results
         if: always()

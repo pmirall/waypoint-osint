@@ -21,8 +21,8 @@ import urllib.request
 
 DATASET = "https://huggingface.co/datasets/lebfla11/osm-europe-1k/resolve/main"
 MODELS = "https://huggingface.co/killameep/waypoint-models/resolve/main"
-ORT = ("https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/"
-       "onnxruntime-linux-x64-1.24.4.tgz")
+ORT = ("https://huggingface.co/csukuangfj2/onnxruntime-libs/resolve/main/1.24.4/"
+       "onnxruntime-linux-x64-1.24.4.tgz?download=true")
 SAMPLES = ("00054.jpg", "00060.jpg", "00059.jpg", "00055.jpg")
 
 
@@ -207,7 +207,7 @@ def run_tests(root, baseline_binary, phase_binary):
                    "--no_sun_refine", "--no_geocode", "--max_images","90",
                    "--verify_top_n","5", "--top_k","5",
                    "--retrieval_top_clusters",("1" if mode == "baseline" else "3")]
-            env = dict(os.environ, WAYPOINT_ACCEL="cpu",
+            env = dict(os.environ, WAYPOINT_ACCEL="cpu", WAYPOINT_BENCH_SEED="20261123",
                        WAYPOINT_ORT_DLL=str((Path("benchdata")/"ort"/"libonnxruntime.so").resolve()),
                        WAYPOINT_ONNX_DIR=str((Path("benchdata")/"onnx").resolve()))
             print(f"\nRUN {mode} {sample['id']} at {time.strftime('%H:%M:%S')}",flush=True)
