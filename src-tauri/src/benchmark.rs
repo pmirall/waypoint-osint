@@ -309,6 +309,9 @@ fn metrics(rows: &[Value], n: usize, profile: &str) -> Value {
         .filter_map(|r| r["error_m"].as_f64()).filter(|x| x.is_finite()).collect();
     let mut sorted = errors.clone();
     sorted.sort_by(f64::total_cmp);
+    let median = if sorted.is_empty() { None } else if sorted.len() % 2 == 0 {
+        Some((sorted[sorted.len()/2 - 1] + sorted[sorted.len()/2]) / 2.0)
+    } else { Some(sorted[sorted.len()/2]) };
     let accuracy = |threshold: f64| -> Value {
         if n == 0 { return Value::Null; }
         json!(errors.iter().filter(|x| **x <= threshold).count() as f64 / n as f64)
@@ -326,7 +329,7 @@ fn metrics(rows: &[Value], n: usize, profile: &str) -> Value {
         "accuracy_100m": accuracy(100.0),
         "accuracy_1km": accuracy(1000.0),
         "accuracy_25km": accuracy(25000.0),
-        "median_error_m": if sorted.is_empty() { Value::Null } else { json!(sorted[sorted.len()/2]) },
+        "median_error_m": median,
         "metric_note": if profile == "coarse" {
             "PLONK cluster-centre error, NOT precision geolocation"
         } else {
@@ -615,7 +618,7 @@ mod tests {
         let rows = parse_manifest(text).unwrap();
         assert_eq!(rows.len(), 4);
         assert_eq!(select_photos(rows, 4).unwrap()[1].country, "ES");
-        assert_eq!(csv_fields("a,\"b,c\",\"x\"\"y\""), ["a","b,c","x\"y"]);
+        assert_eq!(csv_fields("a,\"b,c\",\"x\"\"y\""), vec!["a".to_string(), "b,c".to_string(), "x\"y".to_string()]);
     }
 
     #[test]
