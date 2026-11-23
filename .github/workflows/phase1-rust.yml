@@ -1,0 +1,27 @@
+name: Phase 1 Rust checks
+
+on:
+  push:
+    branches:
+      - "feat/phase1-**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: waypoint-core
+      - name: Test Waypoint core
+        run: cargo test --release --locked --manifest-path waypoint-core/Cargo.toml
+      - name: Check Waypoint core
+        run: cargo check --locked --manifest-path waypoint-core/Cargo.toml
