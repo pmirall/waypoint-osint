@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::geo;
 use crate::models::Models;
 use crate::net;
-use crate::retrieval::{ClusterInfo, Ctx};
+use crate::retrieval::{merge_matches, planned_seeds, ClusterInfo, Ctx};
 use crate::sources::{google_sv, mapillary, panoramax};
 use crate::sun;
 use crate::util::{now_ts, Cancel, Error, Result};
@@ -59,7 +59,7 @@ impl RunArgs {
             mapillary_token: None,
             radius_km: None,
             max_images: 150,
-            retrieval_top_clusters: 1,
+            retrieval_top_clusters: 3,
             fov: 65.0,
             lat: None,
             lon: None,
@@ -92,7 +92,7 @@ struct Run<'a> {
 
 impl<'a> Run<'a> {
     fn ctx<'b>(&'b self, log: &'b (dyn Fn(&str) + Sync)) -> Ctx<'b> {
-        Ctx { models: self.models, target: &self.args.image_path, cancel: self.cancel, log }
+        Ctx { models: self.models, target: &self.args.image_path, fov: self.args.fov, cancel: self.cancel, log }
     }
 
     /// One retrieval source: stage_start, run (errors other than cancel become
@@ -130,7 +130,13 @@ impl<'a> Run<'a> {
             Some(token) => {
                 let stage = format!("{prefix}mapillary");
                 self.stage(&stage, "mapillary_matches", cluster, |ctx, p| {
-                    mapillary::refine_with_retrieval(ctx, &info, token, a.radius_km, a.max_images, verify, a.verify_top_n, p)
+                    {
+                        let mut all = vec![];
+                        for (seed, budget) in planned_seeds(&info, a.max_images) {
+                            all.extend(mapillary::refine_with_retrieval(ctx, &seed, token, a.radius_km, budget, verify, a.verify_top_n, p)?);
+                        }
+                        Ok(merge_matches(all, 5))
+                    }
                 })?;
             }
             None => emit(self.sink, "stage_skipped", json!({ "stage": format!("{prefix}mapillary"), "reason": "no token configured" })),
@@ -138,18 +144,30 @@ impl<'a> Run<'a> {
 
         let stage = format!("{prefix}google_sv");
         self.stage(&stage, "google_sv_matches", cluster, |ctx, p| {
-            google_sv::refine_with_google_sv(ctx, &info, a.radius_km, a.max_images, verify, a.verify_top_n, p)
+            {
+                let mut all = vec![];
+                for (seed, budget) in planned_seeds(&info, a.max_images) {
+                    all.extend(google_sv::refine_with_google_sv(ctx, &seed, a.radius_km, budget, verify, a.verify_top_n, p)?);
+                }
+                Ok(merge_matches(all, 5))
+            }
         })?;
 
         let stage = format!("{prefix}panoramax");
         self.stage(&stage, "panoramax_matches", cluster, |ctx, p| {
-            panoramax::refine_with_panoramax(ctx, &info, a.radius_km, a.max_images, verify, a.verify_top_n, p)
+            {
+                let mut all = vec![];
+                for (seed, budget) in planned_seeds(&info, a.max_images) {
+                    all.extend(panoramax::refine_with_panoramax(ctx, &seed, a.radius_km, budget, verify, a.verify_top_n, p)?);
+                }
+                Ok(merge_matches(all, 5))
+            }
         })?;
         Ok(())
     }
 
     fn cluster_json(c: &geo::Cluster) -> Value {
-        json!({ "lat": c.lat, "lon": c.lon, "lat_std": c.lat_std, "lon_std": c.lon_std, "count": c.count, "weight": c.weight })
+        json!({ "lat": c.lat, "lon": c.lon, "lat_std": c.lat_std, "lon_std": c.lon_std, "count": c.count, "weight": c.weight, "search_seeds": c.search_seeds })
     }
 
     fn run_one(&self) -> Result<()> {

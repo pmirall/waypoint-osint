@@ -16,6 +16,8 @@ pub mod onnx;
 pub mod pipeline;
 pub mod plonk;
 pub mod prep;
+pub mod perspective;
+pub mod search;
 pub mod ransac;
 pub mod retrieval;
 pub mod sources;

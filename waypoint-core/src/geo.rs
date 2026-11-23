@@ -2,6 +2,7 @@
 //! group PLONK samples (semantics follow scikit-learn's `DBSCAN(metric='haversine')`).
 
 use crate::util::py_round;
+use std::collections::BTreeMap;
 
 pub const EARTH_RADIUS_KM: f64 = 6371.0;
 pub const EARTH_RADIUS_M: f64 = 6_371_000.0;
@@ -32,6 +33,8 @@ pub struct Cluster {
     pub lon_std: f64,
     pub count: usize,
     pub weight: f64,
+    /// Dense subarea representatives, including the main cluster centre.
+    pub search_seeds: Vec<[f64; 2]>,
 }
 
 fn to_unit(lat_deg: f32, lon_deg: f32) -> [f64; 3] {
@@ -144,6 +147,27 @@ pub fn cluster_samples(
         let mean = |k: usize| members.iter().map(|c| c[k] as f64).sum::<f64>() / m;
         let std = |k: usize, mu: f64| (members.iter().map(|c| (c[k] as f64 - mu).powi(2)).sum::<f64>() / m).sqrt();
         let (lat, lon) = (mean(0), mean(1));
+        // Break broad PLONK modes into dense geographic subareas.
+        let lon_cell = 0.08 / lat.to_radians().cos().abs().max(0.15);
+        let mut bins: BTreeMap<(i64, i64), (usize, f64, f64)> = BTreeMap::new();
+        for p in &members {
+            let key = ((p[0] as f64 / 0.08).floor() as i64, (p[1] as f64 / lon_cell).floor() as i64);
+            let entry = bins.entry(key).or_insert((0, 0.0, 0.0));
+            entry.0 += 1;
+            entry.1 += p[0] as f64;
+            entry.2 += p[1] as f64;
+        }
+        let mut cells: Vec<(usize, f64, f64)> =
+            bins.values().map(|&(n, la, lo)| (n, la / n as f64, lo / n as f64)).collect();
+        cells.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut search_seeds = vec![[lat, lon]];
+        for (count, la, lo) in cells {
+            if count < 3 { continue; }
+            if search_seeds.iter().all(|s| haversine_m(s[0], s[1], la, lo) >= 6000.0) {
+                search_seeds.push([la, lo]);
+            }
+            if search_seeds.len() >= 3 { break; }
+        }
         clusters.push(Cluster {
             lat,
             lon,
@@ -151,6 +175,7 @@ pub fn cluster_samples(
             lon_std: std(1, lon),
             count: members.len(),
             weight: py_round(m / n as f64, 3),
+            search_seeds,
         });
     }
     clusters.sort_by(|a, b| b.count.cmp(&a.count)); // stable, like list.sort
